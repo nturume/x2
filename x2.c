@@ -529,13 +529,6 @@ static int x2searchDirInner(struct Inode *ino, u8 *name, usize namelen,
   return X2_ERR_NO_ENT;
 }
 
-static int x2searchDirRaw(usize inode_idx, u8 *name, usize namelen,
-                          usize *inode) {
-  struct Inode ino;
-  x2readInode(inode_idx, &ino);
-  return x2searchDirInner(&ino, name, namelen, inode);
-}
-
 static int x2searchDir(struct Inode *parent, u8 *name, usize namelen,
                        struct Inode *res, usize *res_ino_idx) {
   if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
@@ -556,7 +549,7 @@ static int x2searchDir(struct Inode *parent, u8 *name, usize namelen,
   return X2_OK;
 }
 
-static int x2dirIsEmptyInner(usize parent_idx, usize inode_idx,
+static int x2dirIsEmpty(usize parent_idx, usize inode_idx,
                              struct Inode *ino) {
   struct DirInodeR dino = x2dirInoInit(ino, 3);
   u8 namebuf[255];
@@ -570,22 +563,18 @@ static int x2dirIsEmptyInner(usize parent_idx, usize inode_idx,
   return 1;
 }
 
-static int x2dirIsEmpty(usize parent_idx, usize inode_idx) {
-  struct Inode ino;
-  x2readInode(inode_idx, &ino);
-  return x2dirIsEmptyInner(parent_idx, inode_idx, &ino);
-}
-
 static void x2deallocInode(struct Inode *parent, usize parent_idx,
                            usize inode_idx, u8 is_dir) {
   struct Inode ino;
   x2readInode(inode_idx, &ino);
   assert(ino.links_count > 0);
-  if (checkBits(ino.mode, EXT2_S_IFDIR)) {
+  if (checkBits(ino.mode, EXT2_S_IFDIR) && x2dirIsEmpty(parent_idx, inode_idx, &ino)) {
+    /*if not empt*/
     ino.links_count = 0;
   } else {
     ino.links_count -= 1;
   }
+
   if (ino.links_count > 0) { /*lucky mf*/
     x2WriteInode(inode_idx, &ino);
     return;
@@ -616,10 +605,6 @@ static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
     if (dent.name_len == namelen && !memcmp(name, dent.name, namelen)) {
       usize victim_ino = dino.ent_ptr->inode;
       u8 victim_ino_is_dir = dino.ent_ptr->file_type == EXT2_FT_DIR;
-      if (victim_ino && victim_ino_is_dir &&
-          !x2dirIsEmpty(parent_inode_idx, victim_ino)) {
-        return X2_ERR_DIR_NOT_EMPTY;
-      }
       struct DirEnt *working_ptr = x2mergeLeft(&dino);
       x2mergeRight(working_ptr);
       x2writeBlocks(dino.ent_block, 1, blockbuf[dino.blockbuf]);
@@ -884,16 +869,16 @@ static int x2createFileInner(struct Inode *parent, usize parent_idx,
                              struct Inode *child, usize *child_idx,
                              const char *name, usize name_len, u32 file_type) {
 
+  if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
+    return X2_ERR_NOT_DIR;
+  }
+
   if (file_type & EXT2_FT_DIR) {
     if (sb.free_inodes_count < 1 || sb.free_blocks_count < 1)
       return X2_ERR_NO_SPACE;
   } else {
     if (sb.free_inodes_count < 1)
       return X2_ERR_NO_SPACE;
-  }
-
-  if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
-    return X2_ERR_NOT_DIR;
   }
 
   struct DirEnt ent = {
@@ -1198,14 +1183,14 @@ void x2Init(struct BlockDev *d) {
   dev = d;
   x2ReadSuperBlock();
   assert(sb.magic == 0xef53);
+  assert(x2blockSize() == 4096);
+  assert(x2blocksHoldingBitmap(sb.blocks_per_group) == 1);
+  assert(x2blocksHoldingBitmap(sb.inodes_per_group) == 1);
   assert(sb.inode_size == 128);
   usize sz = x2totalGroups() * sizeof(struct GroupDesc);
   usize gdescblocks = alignF(sz, BLOCKSIZE) / BLOCKSIZE;
   assert(gdescblocks == 1);
   gdesc = malloc(sz); /*new*/
   x2ReadBGDescs();
-  assert(x2blockSize() == 4096);
-  assert(x2blocksHoldingBitmap(sb.blocks_per_group) == 1);
-  assert(x2blocksHoldingBitmap(sb.inodes_per_group) == 1);
   /* TODO */
 }
