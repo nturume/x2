@@ -9,6 +9,10 @@ struct BlockDev *dev;
 struct GroupDesc *gdesc;
 u8 blockbuf[4][BLOCKSIZE];
 
+static inline u8 checkBits(u32 value, u32 bits) {
+  return (value & bits) == bits;
+}
+
 static usize alignB(u64 addr, usize target) { return addr & ~(target - 1); }
 static usize alignF(u64 addr, usize target) {
   return alignB(addr - 1, target) + target;
@@ -396,11 +400,11 @@ static void x2deallocIndirect(u32 *ptr) {
 
 static void x2deallocInodeBlocks(struct Inode *ino) {
   u64 file_size = x2getFileSize(ino);
-  if(ino->mode&EXT2_S_IFLNK&&file_size<=60){
+  if (checkBits(ino->mode, EXT2_S_IFLNK) && file_size <= 60) {
     return;
   }
   usize total_blocks = alignF(file_size, BLOCKSIZE) / BLOCKSIZE;
-  for (usize i = 0; i < total_blocks;i++) {
+  for (usize i = 0; i < total_blocks; i++) {
     usize victim = x2getFileBlock(ino, i);
     assert(victim != 0);
     x2deallocBlock(victim);
@@ -430,7 +434,7 @@ static void x2deallocInodeBlocks(struct Inode *ino) {
   /*}*/
 
   /*idgaf about large files*/
-  assert("Too large file"==NULL);
+  assert("Too large file" == NULL);
 }
 
 static void printString(u8 *s, usize len) {
@@ -534,7 +538,7 @@ static int x2searchDirRaw(usize inode_idx, u8 *name, usize namelen,
 
 static int x2searchDir(struct Inode *parent, u8 *name, usize namelen,
                        struct Inode *res, usize *res_ino_idx) {
-  if (!(parent->mode & EXT2_S_IFDIR)) {
+  if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
     return X2_ERR_NOT_DIR;
   }
 
@@ -577,7 +581,7 @@ static void x2deallocInode(struct Inode *parent, usize parent_idx,
   struct Inode ino;
   x2readInode(inode_idx, &ino);
   assert(ino.links_count > 0);
-  if (ino.mode & EXT2_S_IFDIR) {
+  if (checkBits(ino.mode, EXT2_S_IFDIR)) {
     ino.links_count = 0;
   } else {
     ino.links_count -= 1;
@@ -590,7 +594,7 @@ static void x2deallocInode(struct Inode *parent, usize parent_idx,
   x2deallocInodeBlocks(&ino);
   x2dealloInodeBit(inode_idx, is_dir);
 
-  u8 inode_is_dir = (ino.mode & EXT2_S_IFDIR) > 0;
+  u8 inode_is_dir = checkBits(ino.mode, EXT2_S_IFDIR);
   assert(inode_is_dir == is_dir);
 
   if (inode_is_dir) {
@@ -888,7 +892,7 @@ static int x2createFileInner(struct Inode *parent, usize parent_idx,
       return X2_ERR_NO_SPACE;
   }
 
-  if (!(parent->mode & EXT2_S_IFDIR)) {
+  if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
     return X2_ERR_NOT_DIR;
   }
 
@@ -991,7 +995,7 @@ static usize x2writeFileBlock(struct Inode *ino, u64 file_offt, u8 *buf,
 isize x2write(struct Inode *ino, usize inode_idx, u8 *buf, usize len,
               u64 offt) {
 
-  if (!(ino->mode & EXT2_S_IFREG)) {
+  if (!checkBits(ino->mode, EXT2_S_IFREG)) {
     return X2_ERR_NOT_FILE;
   }
 
@@ -1073,7 +1077,7 @@ isize x2write(struct Inode *ino, usize inode_idx, u8 *buf, usize len,
 }
 
 int x2readLink(struct Inode *ino, char *result, usize resultlen) {
-  if (!(ino->mode & EXT2_S_IFLNK)) {
+  if (!checkBits(ino->mode, EXT2_S_IFLNK)) {
     return X2_ERR_NOT_SYMLINK;
   }
 
@@ -1103,7 +1107,7 @@ int x2readLink(struct Inode *ino, char *result, usize resultlen) {
 int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
                  usize *child_idx, const char *link_name,
                  const char *target_name) {
-  if (!(parent->mode & EXT2_S_IFDIR)) {
+  if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
     return X2_ERR_NOT_DIR;
   }
 
