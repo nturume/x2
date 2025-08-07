@@ -7,7 +7,7 @@
 struct SuperBlock sb;
 struct BlockDev *dev;
 struct GroupDesc *gdesc;
-u8 blockbuf[4][BLOCKSIZE];
+__attribute__((aligned(4))) u8 blockbuf[4][BLOCKSIZE];
 
 static inline u8 checkBits(u32 value, u32 bits) {
   return (value & bits) == bits;
@@ -119,6 +119,8 @@ static usize x2getFileBlock(struct Inode *inode, usize block_idx) {
   block_idx -= 12;
 
   if (block_idx < 1024) {
+    if (inode->block[12] == 0)
+      return 0;
     x2readBlocks(inode->block[12], 1, blockbuf[1]); /*indirect shit*/
     u32 *indirect = (u32 *)blockbuf[1];
     block = indirect[block_idx];
@@ -128,8 +130,12 @@ static usize x2getFileBlock(struct Inode *inode, usize block_idx) {
   block_idx -= 1024;
 
   if (block_idx < 1024 * 1024) {
+    if (inode->block[13] == 0)
+      return 0;
     x2readBlocks(inode->block[13], 1, blockbuf[1]); /* doubl indirect shit*/
     u32 dindirect = ((u32 *)blockbuf[1])[(block_idx >> 10) & 0x3ff];
+    if (dindirect == 0)
+      return 0;
     x2readBlocks(dindirect, 1, blockbuf[1]);
     u32 *indirect = (u32 *)blockbuf[1];
     block = indirect[block_idx & 0x3ff];
@@ -391,50 +397,47 @@ static struct BlockLoc x2getFileBlockLoc(struct Inode *ino, usize block_idx) {
   return x2getBlockLoc(realblockpos);
 }
 
-static void x2deallocIndirect(u32 *ptr) {
-  while (*ptr) {
-    x2deallocBlock(*ptr);
-    ptr += 1;
+static void x2deallocIndirect(u32 *d) {
+  for (usize i = 0; i < 1024; i++) {
+    if (d[i]) {
+      x2deallocBlock(d[i]);
+    }
   }
 }
 
 static void x2deallocInodeBlocks(struct Inode *ino) {
-  u64 file_size = x2getFileSize(ino);
-  if (checkBits(ino->mode, EXT2_S_IFLNK) && file_size <= 60) {
+  if (checkBits(ino->mode, EXT2_S_IFLNK) && x2getFileSize(ino) <= 60) {
     return;
   }
-  usize total_blocks = alignF(file_size, BLOCKSIZE) / BLOCKSIZE;
-  for (usize i = 0; i < total_blocks; i++) {
-    usize victim = x2getFileBlock(ino, i);
-    assert(victim != 0);
-    x2deallocBlock(victim);
-  }
-  /*sparse file not suppohed*/
-  if (total_blocks < 13u) {
-    return;
+  usize i;
+  u32 *dd;
+
+  for (i = 0; i < 12; i++) {
+    if (ino->block[i]) {
+      x2deallocBlock(ino->block[i]);
+    }
   }
 
-  x2deallocBlock(ino->block[12]);
-
-  if (total_blocks < (1024u + 13u)) {
-    return;
+  if (ino->block[12]) {
+    x2readBlocks(ino->block[12], 1, blockbuf[0]);
+    x2deallocIndirect((u32 *)blockbuf[0]);
+    x2deallocBlock(ino->block[12]);
   }
 
-  /*{*/
-  x2readBlocks(ino->block[13], 1, blockbuf[1]);
-  u32 *ptr = (void *)blockbuf[1];
-
-  x2deallocIndirect(ptr);
-
-  x2deallocBlock(ino->block[13]);
-
-  if (total_blocks < ((13u + 1024u) + (1024u * 1024u))) {
-    return;
+  if (ino->block[13]) {
+    x2readBlocks(ino->block[13], 1, blockbuf[1]);
+    dd = (u32 *)blockbuf[1];
+    for (i = 0; i < 1024; i++) {
+      if (dd[i]!=0) {
+        x2readBlocks(dd[i], 1, blockbuf[2]);
+        x2deallocIndirect((u32 *)blockbuf[2]);
+        x2deallocBlock(dd[i]);
+      }
+    }
+    x2deallocBlock(ino->block[13]);
   }
-  /*}*/
 
-  /*idgaf about large files*/
-  assert("Too large file" == NULL);
+  //TODO tripple indirect
 }
 
 static void printString(u8 *s, usize len) {
@@ -549,8 +552,7 @@ static int x2searchDir(struct Inode *parent, u8 *name, usize namelen,
   return X2_OK;
 }
 
-static int x2dirIsEmpty(usize parent_idx, usize inode_idx,
-                             struct Inode *ino) {
+static int x2dirIsEmpty(usize parent_idx, usize inode_idx, struct Inode *ino) {
   struct DirInodeR dino = x2dirInoInit(ino, 3);
   u8 namebuf[255];
   struct DirEnt dent = x2dirEntInit(namebuf);
@@ -568,7 +570,8 @@ static void x2deallocInode(struct Inode *parent, usize parent_idx,
   struct Inode ino;
   x2readInode(inode_idx, &ino);
   assert(ino.links_count > 0);
-  if (checkBits(ino.mode, EXT2_S_IFDIR) && x2dirIsEmpty(parent_idx, inode_idx, &ino)) {
+  if (checkBits(ino.mode, EXT2_S_IFDIR) &&
+      x2dirIsEmpty(parent_idx, inode_idx, &ino)) {
     /*if not empt*/
     ino.links_count = 0;
   } else {
@@ -632,18 +635,20 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
     ino->blocks += BLOCKSIZE / 512;
     return X2_OK;
   }
-  if (new_block_idx == 12) { /*adding 13th*/
-    res = x2allocBlockX(&allocidx);
-    if (res != X2_OK) {
-      return res;
-    }
-    memset(blockbuf[0], 0, BLOCKSIZE);
-    x2writeBlocks(allocidx, 1, blockbuf[0]);
-    ino->block[12] = allocidx;
-    ino->blocks += BLOCKSIZE / 512;
-  }
   new_block_idx -= 12;
   if (new_block_idx < 1024) {
+
+    if (ino->block[12] == 0) { /*adding 13th*/
+      res = x2allocBlockX(&allocidx);
+      if (res != X2_OK) {
+        return res;
+      }
+      memset(blockbuf[0], 0, BLOCKSIZE);
+      x2writeBlocks(allocidx, 1, blockbuf[0]);
+      ino->block[12] = allocidx;
+      ino->blocks += BLOCKSIZE / 512;
+    }
+
     x2readBlocks(ino->block[12], 1, blockbuf[1]); /*indirect*/
     u32 *indirect = (u32 *)blockbuf[1];
     assert(indirect[new_block_idx] == 0);
@@ -653,26 +658,26 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
     return X2_OK;
   }
   new_block_idx -= 1024;
-  if (new_block_idx == 0) {
-    res = x2allocBlockX(&allocidx);
-    if (res != X2_OK) {
-      return res;
-    }
-    memset(blockbuf[0], 0, BLOCKSIZE);
-    x2writeBlocks(allocidx, 1, blockbuf[0]);
-    assert(ino->block[13] == 0);
-    ino->block[13] = allocidx;
-    ino->blocks += BLOCKSIZE / 512;
-  }
-
   if (new_block_idx < (1024 * 1024)) {
+
+    if (ino->block[13] == 0) {
+      res = x2allocBlockX(&allocidx);
+      if (res != X2_OK) {
+        return res;
+      }
+      memset(blockbuf[0], 0, BLOCKSIZE);
+      x2writeBlocks(allocidx, 1, blockbuf[0]);
+      ino->block[13] = allocidx;
+      ino->blocks += BLOCKSIZE / 512;
+    }
+
     x2readBlocks(ino->block[13], 1, blockbuf[1]); /*dubl indirect*/
     u32 *dindirect = (u32 *)blockbuf[1];
     usize ddidx = (new_block_idx >> 10) & 0x3ff;
 
     if (dindirect[ddidx] == 0) {
       res = x2allocBlockX(&allocidx);
-      assert(new_block_idx % 1024 == 0);
+      // assert(new_block_idx % 1024 == 0);
       if (res != X2_OK) {
         return res;
       }
@@ -684,6 +689,7 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
     }
 
     usize indirect_block = dindirect[ddidx];
+    assert(indirect_block != 0);
     x2readBlocks(indirect_block, 1, blockbuf[1]);
     u32 *indirect = (u32 *)blockbuf[1];
     assert(indirect[new_block_idx & 0x3ff] == 0);
@@ -692,40 +698,11 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
     ino->blocks += BLOCKSIZE / 512;
     return X2_OK;
   }
-  assert("4GB+ file" == NULL); /*4GB+*/
-}
 
-/*wont write inode*/
-static int x2inodeAddBlocks(struct Inode *ino, usize n, usize *added) {
-  usize new_block_idx = alignF(x2getFileSize(ino), BLOCKSIZE) / BLOCKSIZE;
-  usize idx;
-  *added = 0;
-  for (usize i = 0; i < n; i++) {
-    int res = x2allocBlockX(&idx);
+  // new_block_idx -= (1024 * 1024);
 
-    if (res == X2_ERR_NO_SPACE && i > 0) {
-      return X2_OK;
-    }
-
-    if (res != X2_OK) { /*other error*/
-      return res;
-    }
-
-    res = x2inodeAddBlock(ino, idx, new_block_idx + i);
-
-    if (res == X2_ERR_NO_SPACE && i > 0) {
-      x2deallocBlock(idx);
-      return X2_OK;
-    }
-
-    if (res != X2_OK) { /*other error*/
-      x2deallocBlock(idx);
-      return res;
-    }
-
-    *added += 1;
-  }
-  return X2_OK;
+  // assert("4GB+ file" == NULL); /*4GB+*/
+  return X2_ERR_NO_SPACE;
 }
 
 static void x2initDirBlock(usize block_idx) {
@@ -960,12 +937,25 @@ usize x2read(struct Inode *ino, u8 *buf, usize len, u64 offt) {
   return offt - orig_offt;
 }
 
-static usize x2writeFileBlock(struct Inode *ino, u64 file_offt, u8 *buf,
-                              usize len) {
+static inline int x2writeFileBlock(struct Inode *ino, usize inode_idx,
+                                   u64 file_offt, u8 *buf, usize len) {
   usize block_idx = file_offt / BLOCKSIZE;
   usize block_offt = file_offt % BLOCKSIZE;
   assert(block_offt < BLOCKSIZE && (BLOCKSIZE - block_offt) >= len);
   usize block = x2getFileBlock(ino, block_idx);
+  if (block == 0) {
+    assert(block_offt == 0);
+    if (x2allocBlockX(&block) != X2_OK) {
+      return X2_ERR_NO_SPACE;
+    }
+
+    if (x2inodeAddBlock(ino, block, block_idx) != X2_OK) {
+      x2deallocBlock(block);
+      return X2_ERR_NO_SPACE;
+    }
+    x2WriteInode(inode_idx, ino);
+  }
+
   assert(block != 0);
 
   if (!(block_offt == 0 && len == BLOCKSIZE)) {
@@ -989,50 +979,27 @@ isize x2write(struct Inode *ino, usize inode_idx, u8 *buf, usize len,
 
   usize filesz = x2getFileSize(ino);
 
-  if (offt > filesz) {
-    return X2_ERR_NO_SPACE;
-  }
-
-  u8 update_inode = 0;
-
   u64 orig_offt = offt;
-  u64 final_offt = offt + len;
-  usize final_blocks = alignF(final_offt, BLOCKSIZE) / BLOCKSIZE;
-  usize current_blocks = alignF(filesz, BLOCKSIZE) / BLOCKSIZE;
+  int res;
 
-  if (final_blocks > current_blocks) {
-    usize needed = final_blocks - current_blocks;
-    usize added;
-    int res = x2inodeAddBlocks(ino, needed, &added);
-    if (res != X2_OK) {
-      return res;
-    }
+  int remaining_in_block = (BLOCKSIZE - (offt % BLOCKSIZE));
+  int n = x2writeFileBlock(ino, inode_idx, offt, buf,
+                           remaining_in_block > len ? len : remaining_in_block);
 
-    if (added < needed) {
-      len = added * BLOCKSIZE;
-      final_offt = offt + len;
-    }
-
-    update_inode = 1;
+  if (!(n == remaining_in_block || n == len)) {
+    return n; /*no space*/
   }
 
-  if (final_offt > filesz) {
-    x2setFileSize(ino, final_offt);
-    update_inode = 1;
-  }
-
-  usize remaining_in_block = (BLOCKSIZE - (offt % BLOCKSIZE));
-  usize n = x2writeFileBlock(
-      ino, offt, buf, remaining_in_block > len ? len : remaining_in_block);
+  offt += n;
 
   if (n == len) {
-    if (update_inode) {
+    if (offt > filesz) {
+      x2setFileSize(ino, offt);
       x2WriteInode(inode_idx, ino);
     }
     return n;
   }
 
-  offt += n;
   len -= n;
   buf += n;
 
@@ -1043,18 +1010,28 @@ isize x2write(struct Inode *ino, usize inode_idx, u8 *buf, usize len,
   usize full_blocks = len / BLOCKSIZE;
 
   for (usize i = 0; i < full_blocks; i++) {
-    assert(x2writeFileBlock(ino, offt, buf, BLOCKSIZE) == BLOCKSIZE);
+    res = x2writeFileBlock(ino, inode_idx, offt, buf, BLOCKSIZE);
+    if (res != BLOCKSIZE) {
+      if (offt > filesz) {
+        x2setFileSize(ino, offt);
+        x2WriteInode(inode_idx, ino);
+      }
+      return offt - orig_offt;
+    }
     offt += BLOCKSIZE;
     buf += BLOCKSIZE;
   }
 
   /*still at block boundary*/
   if (remains) {
-    n = x2writeFileBlock(ino, offt, buf, remains);
-    offt += remains;
+    n = x2writeFileBlock(ino, inode_idx, offt, buf, remains);
+    if (n == remains) {
+      offt += remains;
+    }
   }
 
-  if (update_inode) {
+  if (offt > filesz) {
+    x2setFileSize(ino, offt);
     x2WriteInode(inode_idx, ino);
   }
 
