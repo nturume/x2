@@ -428,7 +428,7 @@ static void x2deallocInodeBlocks(struct Inode *ino) {
     x2readBlocks(ino->block[13], 1, blockbuf[1]);
     dd = (u32 *)blockbuf[1];
     for (i = 0; i < 1024; i++) {
-      if (dd[i]!=0) {
+      if (dd[i] != 0) {
         x2readBlocks(dd[i], 1, blockbuf[2]);
         x2deallocIndirect((u32 *)blockbuf[2]);
         x2deallocBlock(dd[i]);
@@ -437,7 +437,7 @@ static void x2deallocInodeBlocks(struct Inode *ino) {
     x2deallocBlock(ino->block[13]);
   }
 
-  //TODO tripple indirect
+  // TODO tripple indirect
 }
 
 static void printString(u8 *s, usize len) {
@@ -882,9 +882,12 @@ static inline usize x2ReadFileBlock(struct Inode *ino, u64 file_offt, u8 *buf,
   usize block_offt = file_offt % BLOCKSIZE;
   assert(block_offt < BLOCKSIZE && (BLOCKSIZE - block_offt) >= len);
   usize block = x2getFileBlock(ino, block_idx);
-  assert(block != 0);
-  x2readBlocks(block, 1, blockbuf[0]);
-  memcpy(buf, blockbuf[0] + block_offt, len);
+  if (block == 0) {
+    memset(buf, 0, len);
+  } else {
+    x2readBlocks(block, 1, blockbuf[0]);
+    memcpy(buf, blockbuf[0] + block_offt, len);
+  }
   return len;
 }
 
