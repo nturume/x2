@@ -19,6 +19,8 @@ i32 main() {
   usize lf_idx;
   x2findInode(&lostfound, "..", &lf, &lf_idx);
 
+  assert(lf_idx == root_idx);
+
   assert(memcmp(&root, &lf, sizeof(struct Inode)) == 0);
 
   usize link1_idx;
@@ -43,6 +45,11 @@ i32 main() {
   u8 readbuf[8];
   assert(x2read(&new_file, readbuf, 8, 0) == 8);
   assert(memcmp(readbuf, "12345678", 8) == 0);
+  assert(new_file.size == 8);
+
+  assert(x2unlink(&new_dir, new_dir_idx, "a.txt")==0);
+  assert(x2unlink(&root, root_idx, "xfeedf")==0);
+  assert(x2unlink(&lostfound, lostfound_idx, "lost-link")==0);
 
   DummyFlush();
   return 0;

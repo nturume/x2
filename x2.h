@@ -173,25 +173,6 @@ struct DirInodeR {
   int done;
 };
 
-typedef struct DirInodeR X2DirIter;
-
-struct FileInodeRW {
-  struct Inode ino; /*<|*/
-  usize inode_idx;  /*|*/
-  usize filesz;
-  usize block;
-  usize offt;
-  usize block_idx;
-  int done;
-};
-
-struct InodeData {
-  struct Inode *ptr;
-  usize idx;
-};
-
-typedef struct FileInodeRW X2File;
-
 struct GroupDesc {
   u32 block_bitmap;
   u32 inode_bitmap;
