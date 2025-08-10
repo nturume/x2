@@ -7,7 +7,146 @@
 struct SuperBlock sb;
 struct BlockDev *dev;
 struct GroupDesc *gdesc;
-__attribute__((aligned(4))) u8 blockbuf[4][BLOCKSIZE];
+// __attribute__((aligned(4))) u8 blockbuf[4][BLOCKSIZE];
+
+#define CACHE_SIZE 8
+
+__attribute__((aligned(4))) u8 blocks[CACHE_SIZE][BLOCKSIZE];
+struct Node {
+  struct Node *next;
+  struct Node *prev;
+  u8 *buf;
+  int block_idx;
+  int pinned;
+  int dirty;
+};
+
+struct LRU {
+  struct Node nodes[CACHE_SIZE + 2];
+  struct Node *head;
+  struct Node *tail;
+};
+
+struct LRU cache;
+
+static void wb(u32 pos, u8 *buf) {
+  dev->writeBlock(dev, pos, buf);
+}
+
+static void rb(u32 pos, u8 *buf) {
+  dev->readBlock(dev, pos, buf);
+}
+
+static void cacheInit() {
+  for (int i = 1; i <= CACHE_SIZE; i++) {
+    rb(i, blocks[i-1]);
+    
+    cache.nodes[i].buf = blocks[i-1];
+    cache.nodes[i].block_idx = i;
+    
+    cache.nodes[i].pinned = 0;
+
+    cache.nodes[i].next = &cache.nodes[i + 1];
+    cache.nodes[i].prev = &cache.nodes[i - 1];
+  }
+
+  cache.head = &cache.nodes[0];
+  cache.tail = &cache.nodes[CACHE_SIZE + 1];
+
+  cache.head->next = &cache.nodes[1];
+  cache.head->prev = NULL;
+
+  cache.tail->next = NULL;
+  cache.tail->prev = &cache.nodes[CACHE_SIZE];
+
+  assert(cache.nodes[CACHE_SIZE].next == cache.tail);
+  assert(cache.nodes[1].prev == cache.head);
+}
+
+static void cacheAdd(struct Node *n) {
+  cache.head->next->prev = n;
+
+  n->next = cache.head->next;
+  n->prev = cache.head;
+
+  cache.head->next = n;
+}
+
+static struct Node *cacheHas(int block_idx) {
+  // for (int i = 1; i <= CACHE_SIZE; i++) {
+  //   if (cache.nodes[i].block_idx == block_idx) {
+  //     return &cache.nodes[i];
+  //   }
+  // }
+  struct Node *tmp = cache.head->next;
+  while (tmp != cache.tail) {
+    if (tmp->block_idx == block_idx) {
+      return tmp;
+    }
+    tmp = tmp->next;
+  }
+  return NULL;
+}
+
+static struct Node *cacheEvict() {
+  struct Node *tmp = cache.tail->prev;
+  while (tmp != cache.head) {
+    if (tmp->pinned == 0) {
+      // TODO write block if dirty
+      if(tmp->dirty) {
+        wb(tmp->block_idx, tmp->buf);
+      }
+      tmp->next->prev = tmp->prev;
+      tmp->prev->next = tmp->next;
+      return tmp;
+    }
+    tmp = tmp->prev;
+  }
+  assert("no free nodes" == NULL);
+}
+
+static u8 *getIn(int block_idx, int pin, int read) {
+  struct Node *node = cacheHas(block_idx);
+  if (node == NULL) {
+    printf("cache miss..\n");
+    node = cacheEvict();
+    node->block_idx = block_idx;
+    // TODO read
+    if (read) {
+      rb(block_idx, node->buf);
+    }
+  } else {
+    printf("cache hit..\n");
+    assert(!node->pinned);
+    node->next->prev = node->prev;
+    node->prev->next = node->next;
+  }
+  cacheAdd(node);
+  node->pinned = pin ? 1 : 0;
+  return node->buf;
+}
+
+static u8 *get(int block_idx, int pin) { return getIn(block_idx, pin, 1); }
+
+static u8 *getnr(int block_idx) { return getIn(block_idx, 1, 0); }
+
+static void put(int block_idx, int dirty) {
+  // for (int i = 1; i <= CACHE_SIZE; i++) {
+  //   if (cache.nodes[i].block_idx == block_idx) {
+  //     struct Node *tmp = &cache.nodes[i];
+  //     assert(tmp->pinned);
+  //     tmp->pinned = 0;
+  //     tmp->dirty = dirty;
+  //     return;
+  //   }
+  // }
+  // assert("invalid put" == NULL);
+  struct Node *tmp = cacheHas(block_idx);
+  assert(tmp != NULL);
+  assert(tmp->pinned);
+  tmp->pinned = 0;
+  tmp->dirty = dirty;
+}
 
 static inline u8 checkBits(u32 value, u32 bits) {
   return (value & bits) == bits;
@@ -26,18 +165,6 @@ static usize x2totalGroups() {
 
 static usize inodesPerBlock() { return x2blockSize() / sb.inode_size; }
 
-static void x2readBlocks(usize pos, usize n, u8 *buf) {
-  for (usize i = 0; i < n; i++) {
-    dev->readBlock(dev, pos + i, buf + (BLOCKSIZE * i));
-  }
-}
-
-static void x2writeBlocks(usize pos, usize n, u8 *buf) {
-  for (usize i = 0; i < n; i++) {
-    dev->writeBlock(dev, pos + i, buf + (BLOCKSIZE * i));
-  }
-}
-
 static u32 x2readTimestamp() {
   time_t t;
   time(&t);
@@ -45,27 +172,33 @@ static u32 x2readTimestamp() {
 }
 
 static void x2ReadSuperBlock() {
-  x2readBlocks(0, 1, blockbuf[0]);
-  sb = *((struct SuperBlock *)(blockbuf[0] + 1024));
+  // x2readBlocks(0, 1, blockbuf[0]);
+  u8 *b = get(0, 0);
+  sb = *((struct SuperBlock *)(b + 1024));
 }
 
 static void x2writeSuperBlock() {
-  x2readBlocks(0, 1, blockbuf[0]);
-  *((struct SuperBlock *)(blockbuf[0] + 1024)) = sb;
-  x2writeBlocks(0, 1, blockbuf[0]);
+  // x2readBlocks(0, 1, blockbuf[0]);
+  u8 *b = get(0, 1);
+  *((struct SuperBlock *)(b + 1024)) = sb;
+  // x2writeBlocks(0, 1, blockbuf[0]);
+  put(0, 1);
 }
 
 static void x2ReadBGDescs() {
   usize sz = x2totalGroups() * sizeof(struct GroupDesc);
-  x2readBlocks(1, 1, blockbuf[0]);
-  memcpy(gdesc, blockbuf[0], sz);
+  // x2readBlocks(1, blockbuf[0]);
+  u8 *b = get(1, 0);
+  memcpy(gdesc, b, sz);
 }
 
 static void x2witeBGDescs() {
   usize sz = x2totalGroups() * sizeof(struct GroupDesc);
-  x2readBlocks(1, 1, blockbuf[0]);
-  memcpy(blockbuf[0], gdesc, sz);
-  x2writeBlocks(1, 1, blockbuf[0]);
+  // x2readBlock(1, blockbuf[0]);
+  u8 *b = get(1, 1);
+  memcpy(b, gdesc, sz);
+  // x2writeBlock(1, blockbuf[0]);
+  put(1, 1);
 }
 
 static usize x2getInodeBlockCount(struct Inode *ino) {
@@ -98,15 +231,18 @@ struct InodeLoc x2getInodeLoc(usize inode_idx) {
 
 void x2readInode(usize inode_idx, struct Inode *inode) {
   struct InodeLoc loc = x2getInodeLoc(inode_idx);
-  x2readBlocks(loc.block, 1, blockbuf[0]);
-  *inode = ((struct Inode *)blockbuf[0])[loc.idx];
+  // x2readBlocks(loc.block, 1, blockbuf[0]);
+  u8 *b = get(loc.block, 0);
+  *inode = ((struct Inode *)b)[loc.idx];
 }
 
 static void x2WriteInode(usize inode_idx, struct Inode *inode) {
   struct InodeLoc loc = x2getInodeLoc(inode_idx);
-  x2readBlocks(loc.block, 1, blockbuf[0]);
-  ((struct Inode *)blockbuf[0])[loc.idx] = *inode;
-  x2writeBlocks(loc.block, 1, blockbuf[0]);
+  // x2readBlocks(loc.block, 1, blockbuf[0]);
+  u8 *b = get(loc.block, 1);
+  ((struct Inode *)b)[loc.idx] = *inode;
+  // x2writeBlocks(loc.block, 1, blockbuf[0]);
+  put(loc.block, 1);
 }
 
 static usize x2getFileBlock(struct Inode *inode, usize block_idx) {
@@ -117,12 +253,13 @@ static usize x2getFileBlock(struct Inode *inode, usize block_idx) {
     return block;
   }
   block_idx -= 12;
-
+  u8 *b;
   if (block_idx < 1024) {
     if (inode->block[12] == 0)
       return 0;
-    x2readBlocks(inode->block[12], 1, blockbuf[1]); /*indirect shit*/
-    u32 *indirect = (u32 *)blockbuf[1];
+    // x2readBlocks(inode->block[12], 1, blockbuf[1]);
+    b = get(inode->block[12], 0);
+    u32 *indirect = (u32 *)b;
     block = indirect[block_idx];
     return block;
   }
@@ -132,12 +269,14 @@ static usize x2getFileBlock(struct Inode *inode, usize block_idx) {
   if (block_idx < 1024 * 1024) {
     if (inode->block[13] == 0)
       return 0;
-    x2readBlocks(inode->block[13], 1, blockbuf[1]); /* doubl indirect shit*/
-    u32 dindirect = ((u32 *)blockbuf[1])[(block_idx >> 10) & 0x3ff];
+    // x2readBlocks(inode->block[13], 1, blockbuf[1]);
+    b = get(inode->block[13], 0);
+    u32 dindirect = ((u32 *)b)[(block_idx >> 10) & 0x3ff];
     if (dindirect == 0)
       return 0;
-    x2readBlocks(dindirect, 1, blockbuf[1]);
-    u32 *indirect = (u32 *)blockbuf[1];
+    // x2readBlocks(dindirect, 1, blockbuf[1]);
+    b = get(dindirect, 0);
+    u32 *indirect = (u32 *)b;
     block = indirect[block_idx & 0x3ff];
     return block;
   }
@@ -146,13 +285,11 @@ static usize x2getFileBlock(struct Inode *inode, usize block_idx) {
 }
 
 /*init*/
-static struct DirInodeR x2dirInoInit(struct Inode *ino, usize blockbuf) {
+static struct DirInodeR x2dirInoInit(struct Inode *ino) {
   return (struct DirInodeR){
-      .blockbuf = blockbuf,
-      .ino = ino,
-      .block = x2getFileBlock(ino, 0),
-      .offt = 0,
-      .block_idx = 0,
+      .pinned = NULL,
+      .ino = ino,       .block = x2getFileBlock(ino, 0),
+      .offt = 0,        .block_idx = 0,
       .prev_ptr = NULL, /*->|*/
       .ent_ptr = NULL,  /*->|*/
       .ent_block = 0,   /*<-|*/
@@ -168,11 +305,13 @@ static struct DirEnt x2dirEntInit(u8 *name) {
 /*must be dir*/
 static struct DirEnt *x2ReadNxtDirEnt(struct DirInodeR *dino,
                                       struct DirEnt *dirent) {
+  assert(0);
   if (dino->done || dino->block == 0)
     return NULL;
   assert((BLOCKSIZE - dino->offt) >= 12);
-  x2readBlocks(dino->block, 1, blockbuf[dino->blockbuf]);
-  struct DirEnt *tmp = (struct DirEnt *)(blockbuf[dino->blockbuf] + dino->offt);
+  // x2readBlocks(dino->block, 1, blockbuf[dino->blockbuf]);
+  dino->pinned = get(dino->block, 1);
+  struct DirEnt *tmp = (struct DirEnt *)(dino->pinned + dino->offt);
   /*--*/
   dino->prev_ptr = dino->offt == 0 ? NULL : dino->ent_ptr;
   dino->ent_ptr = tmp;
@@ -181,14 +320,15 @@ static struct DirEnt *x2ReadNxtDirEnt(struct DirInodeR *dino,
   u8 *dino_name = dirent->name;
   *dirent = *tmp;
   dirent->name = dino_name;
-  memcpy(dirent->name, blockbuf[dino->blockbuf] + dino->offt + 8,
-         tmp->name_len);
+  memcpy(dirent->name, dino->pinned + dino->offt + 8, tmp->name_len);
   if (tmp->name_len < 255)
     dirent->name[tmp->name_len] = '\0';
   if ((tmp->rec_len + dino->offt) >= BLOCKSIZE) {
     dino->block_idx += 1;
     dino->block = x2getFileBlock(dino->ino, dino->block_idx);
     dino->offt = 0;
+    // put(dino->, )
+    assert(1);
     if (x2getInodeBlockCount(dino->ino) == dino->block_idx)
       dino->done = 1;
   } else {
@@ -275,11 +415,12 @@ static usize x2blocksHoldingBitmap(usize total_items) {
 
 static int x2allocGroupBlocks(usize group_idx, usize nblocks, usize *start) {
   assert(group_idx < x2totalGroups());
-  x2readBlocks(gdesc[group_idx].block_bitmap, 1, blockbuf[0]);
-  if (!x2bitmapGetFreeRange(blockbuf[0], nblocks, start)) {
-    x2bitmapSetFreeRange(blockbuf[0], *start, nblocks);
-    x2writeBlocks(gdesc[group_idx].block_bitmap, 1, blockbuf[0]);
-
+  // x2readBlocks(gdesc[group_idx].block_bitmap, 1, blockbuf[0]);
+  u8 *b = get(gdesc[group_idx].block_bitmap, 1);
+  if (!x2bitmapGetFreeRange(b, nblocks, start)) {
+    x2bitmapSetFreeRange(b, *start, nblocks);
+    // x2writeBlocks(gdesc[group_idx].block_bitmap, 1, blockbuf[0]);
+    put(gdesc[group_idx].block_bitmap, 1);
     gdesc[group_idx].free_blocks_count -= 1;
     x2witeBGDescs();
 
@@ -318,11 +459,13 @@ static int x2allocBlockX(usize *idx) {
 
 static int x2allocInode(struct AllocRes *res, u8 is_dir) {
   for (usize i = 0; i < x2totalGroups(); i++) {
-    x2readBlocks(gdesc[i].inode_bitmap, 1, blockbuf[0]);
-    if (!x2bitmapFirstFree(blockbuf[0], &res->start_idx)) {
-      x2bitmapBlockSet(blockbuf[0], res->start_idx);
-      x2writeBlocks(gdesc[i].inode_bitmap, 1, blockbuf[0]);
-      assert(x2bitmapBlockGet(blockbuf[0], res->start_idx));
+    // x2readBlocks(gdesc[i].inode_bitmap, 1, blockbuf[0]);
+    u8 *b = get(gdesc[i].inode_bitmap, 1);
+    if (!x2bitmapFirstFree(b, &res->start_idx)) {
+      x2bitmapBlockSet(b, res->start_idx);
+      // x2writeBlocks(gdesc[i].inode_bitmap, 1, blockbuf[0]);
+      put(gdesc[i].inode_bitmap, 1);
+      assert(x2bitmapBlockGet(b, res->start_idx));
       res->group = i;
       res->start_idx += 1;
       sb.free_inodes_count -= 1;
@@ -354,9 +497,11 @@ static void x2dealloInodeBit(usize inode_idx, u8 is_dir) {
   inode_idx -= 1;
   usize group = inode_idx / sb.inodes_per_group;
   usize bit = inode_idx % sb.inodes_per_group;
-  x2readBlocks(gdesc[group].inode_bitmap, 1, blockbuf[0]);
-  x2bitmapBlockClear(blockbuf[0], bit);
-  x2writeBlocks(gdesc[group].inode_bitmap, 1, blockbuf[0]);
+  // x2readBlocks(gdesc[group].inode_bitmap, 1, blockbuf[0]);
+  u8 *b = get(gdesc[group].inode_bitmap, 1);
+  x2bitmapBlockClear(b, bit);
+  // x2writeBlocks(gdesc[group].inode_bitmap, 1, blockbuf[0]);
+  put(gdesc[group].inode_bitmap, 1);
 
   gdesc[group].free_inodes_count += 1;
   if (is_dir) {
@@ -381,9 +526,11 @@ struct BlockLoc x2getBlockLoc(usize realblockpos) {
 
 static void x2deallocBlock(usize realblockpos) {
   struct BlockLoc bloc = x2getBlockLoc(realblockpos);
-  x2readBlocks(gdesc[bloc.group].block_bitmap, 1, blockbuf[0]);
-  x2bitmapBlockClear(blockbuf[0], bloc.bitmap_idx);
-  x2writeBlocks(gdesc[bloc.group].block_bitmap, 1, blockbuf[0]);
+  // x2readBlocks(gdesc[bloc.group].block_bitmap, 1, blockbuf[0]);
+  u8 *b = get(gdesc[bloc.group].block_bitmap, 1);
+  x2bitmapBlockClear(b, bloc.bitmap_idx);
+  // x2writeBlocks(gdesc[bloc.group].block_bitmap, 1, blockbuf[0]);
+  put(gdesc[bloc.group].block_bitmap, 1);
 
   sb.free_blocks_count += 1;
   x2writeSuperBlock();
@@ -411,6 +558,7 @@ static void x2deallocInodeBlocks(struct Inode *ino) {
   }
   usize i;
   u32 *dd;
+  u8 *b;
 
   for (i = 0; i < 12; i++) {
     if (ino->block[i]) {
@@ -419,21 +567,27 @@ static void x2deallocInodeBlocks(struct Inode *ino) {
   }
 
   if (ino->block[12]) {
-    x2readBlocks(ino->block[12], 1, blockbuf[0]);
-    x2deallocIndirect((u32 *)blockbuf[0]);
+    // x2readBlocks(ino->block[12], 1, blockbuf[0]);
+    b = get(ino->block[12], 1);
+    x2deallocIndirect((u32 *)b);
+    put(ino->block[12], 0);
     x2deallocBlock(ino->block[12]);
   }
 
   if (ino->block[13]) {
-    x2readBlocks(ino->block[13], 1, blockbuf[1]);
-    dd = (u32 *)blockbuf[1];
+    // x2readBlocks(ino->block[13], 1, blockbuf[1]);
+    b = get(ino->block[13], 1);
+    dd = (u32 *)b;
     for (i = 0; i < 1024; i++) {
       if (dd[i] != 0) {
-        x2readBlocks(dd[i], 1, blockbuf[2]);
-        x2deallocIndirect((u32 *)blockbuf[2]);
+        // x2readBlocks(dd[i], 1, blockbuf[2]);
+        u8 *bb = get(dd[i], 1);
+        x2deallocIndirect((u32 *)b);
+        put(dd[i], 0);
         x2deallocBlock(dd[i]);
       }
     }
+    put(ino->block[13], 0);
     x2deallocBlock(ino->block[13]);
   }
 
@@ -448,9 +602,10 @@ static void printString(u8 *s, usize len) {
 
 static int x2addDirEntToBlock(usize block_idx, struct DirEnt *ent) {
   assert(block_idx != 0);
-  x2readBlocks(block_idx, 1, blockbuf[1]);
+  // x2readBlocks(block_idx, 1, blockbuf[1]);
+  u8 *b = get(block_idx, 1);
   u16 rec_len = alignF(8 + ent->name_len, 4);
-  u8 *ptr = blockbuf[1];
+  u8 *ptr = b;
   u8 *endptr = ptr + BLOCKSIZE;
   for (; ptr < endptr;) {
     struct DirEnt *record = (struct DirEnt *)ptr;
@@ -468,7 +623,8 @@ static int x2addDirEntToBlock(usize block_idx, struct DirEnt *ent) {
       record->inode = ent->inode;
       memset(ptr + 8, 0, rec_len - 8);
       memcpy(ptr + 8, ent->name, ent->name_len);
-      x2writeBlocks(block_idx, 1, blockbuf[1]);
+      // x2writeBlocks(block_idx, 1, blockbuf[1]);
+      put(block_idx, 1);
       return X2_OK;
     }
 
@@ -488,7 +644,8 @@ static int x2addDirEntToBlock(usize block_idx, struct DirEnt *ent) {
       usize old = record->rec_len;
       new_rec->rec_len = record->rec_len - actual_rec_len; /* update new */
       record->rec_len = actual_rec_len;                    /* update old */
-      x2writeBlocks(block_idx, 1, blockbuf[1]);
+      // x2writeBlocks(block_idx, 1, blockbuf[1]);
+      put(block_idx, 1);
       return X2_OK;
     }
     ptr += record->rec_len;
@@ -519,7 +676,7 @@ static void x2mergeRight(struct DirEnt *ent_ptr) {
 
 static int x2searchDirInner(struct Inode *ino, u8 *name, usize namelen,
                             usize *res) {
-  struct DirInodeR dino = x2dirInoInit(ino, 2);
+  struct DirInodeR dino = x2dirInoInit(ino);
   u8 namebuf[255];
   struct DirEnt dent = x2dirEntInit(namebuf);
   for (; x2ReadNxtDirEnt(&dino, &dent);) {
@@ -553,7 +710,7 @@ static int x2searchDir(struct Inode *parent, u8 *name, usize namelen,
 }
 
 static int x2dirIsEmpty(usize parent_idx, usize inode_idx, struct Inode *ino) {
-  struct DirInodeR dino = x2dirInoInit(ino, 3);
+  struct DirInodeR dino = x2dirInoInit(ino);
   u8 namebuf[255];
   struct DirEnt dent = x2dirEntInit(namebuf);
   for (; x2ReadNxtDirEnt(&dino, &dent);) {
@@ -601,7 +758,7 @@ static void x2deallocInode(struct Inode *parent, usize parent_idx,
 
 static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
                                u8 *name, usize namelen) {
-  struct DirInodeR dino = x2dirInoInit(parent, 2);
+  struct DirInodeR dino = x2dirInoInit(parent);
   u8 namebuffer[255];
   struct DirEnt dent = x2dirEntInit(namebuffer);
   for (; x2ReadNxtDirEnt(&dino, &dent);) {
@@ -610,7 +767,8 @@ static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
       u8 victim_ino_is_dir = dino.ent_ptr->file_type == EXT2_FT_DIR;
       struct DirEnt *working_ptr = x2mergeLeft(&dino);
       x2mergeRight(working_ptr);
-      x2writeBlocks(dino.ent_block, 1, blockbuf[dino.blockbuf]);
+      assert(0);
+      // x2writeBlocks(dino.ent_block, 1, blockbuf[dino.blockbuf]);
       if (victim_ino) {
         x2deallocInode(parent, parent_inode_idx, victim_ino, victim_ino_is_dir);
       }
@@ -626,6 +784,7 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
   assert(block != 0);
   usize allocidx;
   int res;
+  u8 *b;
   if (sb.free_blocks_count < 2) {
     return X2_ERR_NO_SPACE;
   }
@@ -643,18 +802,22 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
       if (res != X2_OK) {
         return res;
       }
-      memset(blockbuf[0], 0, BLOCKSIZE);
-      x2writeBlocks(allocidx, 1, blockbuf[0]);
+      b = getnr(allocidx);
+      memset(b, 0, BLOCKSIZE);
+      // x2writeBlocks(allocidx, 1, blockbuf[0]);
+      put(allocidx, 1);
       ino->block[12] = allocidx;
       ino->blocks += BLOCKSIZE / 512;
     }
 
-    x2readBlocks(ino->block[12], 1, blockbuf[1]); /*indirect*/
-    u32 *indirect = (u32 *)blockbuf[1];
+    // x2readBlocks(ino->block[12], 1, blockbuf[1]); /*indirect*/
+    b = get(ino->block[12], 1);
+    u32 *indirect = (u32 *)b;
     assert(indirect[new_block_idx] == 0);
     indirect[new_block_idx] = block;
     ino->blocks += BLOCKSIZE / 512;
-    x2writeBlocks(ino->block[12], 1, blockbuf[1]); /*indirect*/
+    // x2writeBlocks(ino->block[12], 1, blockbuf[1]); /*indirect*/
+    put(ino->block[12], 1);
     return X2_OK;
   }
   new_block_idx -= 1024;
@@ -665,37 +828,50 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
       if (res != X2_OK) {
         return res;
       }
-      memset(blockbuf[0], 0, BLOCKSIZE);
-      x2writeBlocks(allocidx, 1, blockbuf[0]);
+      b = getnr(allocidx);
+      memset(b, 0, BLOCKSIZE);
+      // x2writeBlocks(allocidx, 1, blockbuf[0]);
+      put(allocidx, 1);
       ino->block[13] = allocidx;
       ino->blocks += BLOCKSIZE / 512;
     }
 
-    x2readBlocks(ino->block[13], 1, blockbuf[1]); /*dubl indirect*/
-    u32 *dindirect = (u32 *)blockbuf[1];
+    // x2readBlocks(ino->block[13], 1, blockbuf[1]); /*dubl indirect*/
+    b = get(ino->block[13], 1);
+    u32 *dindirect = (u32 *)b;
     usize ddidx = (new_block_idx >> 10) & 0x3ff;
 
-    if (dindirect[ddidx] == 0) {
+    usize indirect_block = dindirect[ddidx];
+
+    if (indirect_block == 0) {
       res = x2allocBlockX(&allocidx);
       // assert(new_block_idx % 1024 == 0);
       if (res != X2_OK) {
         return res;
       }
-      memset(blockbuf[0], 0, BLOCKSIZE);
-      x2writeBlocks(allocidx, 1, blockbuf[0]);
+      u8 *bb = getnr(allocidx);
+      memset(bb, 0, BLOCKSIZE);
+      // x2writeBlocks(allocidx, 1, blockbuf[0]);
+      put(allocidx, 1);
       dindirect[ddidx] = allocidx;
       ino->blocks += BLOCKSIZE / 512;
-      x2writeBlocks(ino->block[13], 1, blockbuf[1]);
+      // x2writeBlocks(ino->block[13], 1, blockbuf[1]);
+      put(ino->block[13], 1);
+      indirect_block = allocidx;
+    } else {
+      put(ino->block[13], 0);
     }
 
-    usize indirect_block = dindirect[ddidx];
     assert(indirect_block != 0);
-    x2readBlocks(indirect_block, 1, blockbuf[1]);
-    u32 *indirect = (u32 *)blockbuf[1];
+    // x2readBlocks(indirect_block, 1, blockbuf[1]);
+    b = get(indirect_block, 1);
+    u32 *indirect = (u32 *)b;
     assert(indirect[new_block_idx & 0x3ff] == 0);
     indirect[new_block_idx & 0x3ff] = block;
-    x2writeBlocks(indirect_block, 1, blockbuf[1]);
+    // x2writeBlocks(indirect_block, 1, blockbuf[1]);
+    put(indirect_block, 1);
     ino->blocks += BLOCKSIZE / 512;
+
     return X2_OK;
   }
 
@@ -706,13 +882,15 @@ static int x2inodeAddBlock(struct Inode *ino, usize block,
 }
 
 static void x2initDirBlock(usize block_idx) {
-  x2readBlocks(block_idx, 1, blockbuf[0]);
-  struct DirEnt *null_ent = (void *)blockbuf[0];
+  // x2readBlocks(block_idx, 1, blockbuf[0]);
+  u8 *b = get(block_idx, 1);
+  struct DirEnt *null_ent = (void *)b;
   null_ent->file_type = 0;
   null_ent->inode = 0;
   null_ent->name_len = 0;
   null_ent->rec_len = BLOCKSIZE;
-  x2writeBlocks(block_idx, 1, blockbuf[0]);
+  // x2writeBlocks(block_idx, 1, blockbuf[0]);
+  put(block_idx, 1);
 }
 
 /* wont write inode */
@@ -885,8 +1063,9 @@ static inline usize x2ReadFileBlock(struct Inode *ino, u64 file_offt, u8 *buf,
   if (block == 0) {
     memset(buf, 0, len);
   } else {
-    x2readBlocks(block, 1, blockbuf[0]);
-    memcpy(buf, blockbuf[0] + block_offt, len);
+    // x2readBlocks(block, 1, blockbuf[0]);
+    u8 *b = get(block, 0);
+    memcpy(buf, b + block_offt, len);
   }
   return len;
 }
@@ -960,13 +1139,18 @@ static inline int x2writeFileBlock(struct Inode *ino, usize inode_idx,
   }
 
   assert(block != 0);
+  u8 *b;
 
-  if (!(block_offt == 0 && len == BLOCKSIZE)) {
-    x2readBlocks(block, 1, blockbuf[0]);
+  if (block_offt == 0 && len == BLOCKSIZE) {
+    // x2readBlocks(block, 1, blockbuf[0]);
+    b = getnr(block);
+  } else {
+    b = get(block, 1);
   }
 
-  memcpy(blockbuf[0] + block_offt, buf, len);
-  x2writeBlocks(block, 1, blockbuf[0]);
+  memcpy(b + block_offt, buf, len);
+  // x2writeBlocks(block, 1, blockbuf[0]);
+  put(block, 1);
   return len;
 }
 
@@ -1049,13 +1233,15 @@ int x2readLink(struct Inode *ino, char *result, usize resultlen) {
   char *linkbuf;
   usize i;
   usize filesize = x2getFileSize(ino);
+  u8 *b;
 
   if (filesize <= 60) {
     linkbuf = (char *)&ino->block;
   } else {
     usize block = x2getFileBlock(ino, 0);
-    x2readBlocks(block, 1, blockbuf[0]);
-    linkbuf = (char *)blockbuf[0];
+    // x2readBlocks(block, 1, blockbuf[0]);
+    b = get(block, 0);
+    linkbuf = (char *)b;
   }
 
   for (i = 0; i < filesize && i < resultlen; i++) {
@@ -1093,6 +1279,7 @@ int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
 
   char *linkbuf;
   usize block;
+  u8 *b;
 
   if (target_name_len <= 60) {
     linkbuf = (char *)&child->block;
@@ -1103,8 +1290,9 @@ int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
     }
     child->blocks = BLOCKSIZE / 512;
     child->block[0] = block;
-    memset(blockbuf[0], 0, BLOCKSIZE);
-    linkbuf = (char *)blockbuf[0];
+    b = getnr(block);
+    memset(b, 0, BLOCKSIZE);
+    linkbuf = (char *)b;
   }
 
   for (usize i = 0; i < target_name_len; i++) {
@@ -1112,7 +1300,8 @@ int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
   }
 
   if (target_name_len > 60) {
-    x2writeBlocks(block, 1, blockbuf[0]);
+    // x2writeBlocks(block, 1, blockbuf[0]);
+    put(block, 1);
   }
 
   x2setFileSize(child, target_name_len);
@@ -1161,6 +1350,7 @@ int x2unlink(struct Inode *parent, usize parent_inode_idx, const char *name) {
 
 void x2Init(struct BlockDev *d) {
   dev = d;
+  cacheInit();
   x2ReadSuperBlock();
   assert(sb.magic == 0xef53);
   assert(x2blockSize() == 4096);

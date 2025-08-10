@@ -162,7 +162,7 @@ struct Inode {
 };
 
 struct DirInodeR {
-  usize blockbuf;
+  u8 *pinned;
   struct Inode *ino;
   usize block;
   usize offt;
