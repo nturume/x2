@@ -82,6 +82,7 @@
 #define X2_ERR_NOT_DIR -7
 #define X2_ERR_NOT_FILE -8
 #define X2_ERR_NULL_PTR -9
+#define X2_ERR_BAD_PARENT -10
 
 struct SuperBlock {
   u32 inodes_count;
@@ -161,18 +162,6 @@ struct Inode {
   u32 reserved2;
 };
 
-struct DirInodeR {
-  u8 *pinned;
-  struct Inode *ino;
-  usize block;
-  usize offt;
-  usize block_idx;
-  struct DirEnt *prev_ptr; /*->|*/
-  struct DirEnt *ent_ptr;  /*->|*/
-  usize ent_block;         /*<-|*/
-  int done;
-};
-
 struct GroupDesc {
   u32 block_bitmap;
   u32 inode_bitmap;
@@ -208,6 +197,9 @@ int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
 
 int x2createFile(struct Inode *parent, usize parent_idx, struct Inode *child,
                  usize *child_idx, const char *name);
+int x2createFile2(struct Inode *parent, usize parent_idx, struct Inode *child,
+                  usize *child_idx, const char *name, usize name_len,
+                  u32 file_type);
 int x2createDir(struct Inode *parent, usize parent_idx, struct Inode *child,
                 usize *child_idx, const char *name);
 
@@ -215,4 +207,7 @@ void x2readInode(usize inode_idx, struct Inode *inode);
 int x2findInode(struct Inode *parent, const char *name, struct Inode *ino,
                 usize *ino_idx);
 int x2unlink(struct Inode *parent, usize parent_inode_idx, const char *name);
+int x2unlink2(struct Inode *parent, usize parent_inode_idx, const char *name,
+              usize namelen);
+void x2sync();
 void x2Init(struct BlockDev *d);
