@@ -347,10 +347,11 @@ static usize x2blocksHoldingBitmap(usize total_items) {
 static int x2allocGroupBlocks(usize group_idx, usize nblocks, usize *start) {
   assert(group_idx < x2totalGroups());
 
-  if(gdesc[group_idx].free_blocks_count < nblocks) return X2_ERR_NO_SPACE;
-  
+  if (gdesc[group_idx].free_blocks_count < nblocks)
+    return X2_ERR_NO_SPACE;
+
   u8 *b = get(gdesc[group_idx].block_bitmap, 1);
-  
+
   if (!x2bitmapGetFreeRange(b, nblocks, start)) {
     x2bitmapSetFreeRange(b, *start, nblocks);
     put(gdesc[group_idx].block_bitmap, 1);
@@ -371,7 +372,8 @@ struct AllocRes {
 };
 
 static int x2allocBlockInner(struct AllocRes *res) {
-  if(sb.free_blocks_count == 0) return X2_ERR_NO_SPACE;
+  if (sb.free_blocks_count == 0)
+    return X2_ERR_NO_SPACE;
   for (usize i = 0; i < x2totalGroups(); i++) {
     if (!x2allocGroupBlocks(i, 1, &res->start_idx)) {
       res->group = i;
@@ -392,9 +394,11 @@ static int x2allocBlockX(usize *idx) {
 }
 
 static int x2allocInode(struct AllocRes *res, u8 is_dir) {
-  if(sb.free_inodes_count==0) return X2_ERR_NO_SPACE;
+  if (sb.free_inodes_count == 0)
+    return X2_ERR_NO_SPACE;
   for (usize i = 0; i < x2totalGroups(); i++) {
-    if(gdesc[i].free_inodes_count == 0) continue;
+    if (gdesc[i].free_inodes_count == 0)
+      continue;
     u8 *b = get(gdesc[i].inode_bitmap, 1);
     if (!x2bitmapFirstFree(b, &res->start_idx)) {
       x2bitmapBlockSet(b, res->start_idx);
@@ -571,6 +575,22 @@ static int x2addDirEntToBlock(usize block_idx, struct DirEnt *ent) {
   return X2_ERR_NO_SPACE;
 }
 
+void x2loopDir(struct Inode *ino, dirCB cb, void *ctx) {
+  usize bcount = x2getInodeBlockCount(ino);
+  for (usize block = 0; block < bcount; block += 1) {
+    u8 *blockbuf = get(x2getFileBlock(ino, block), 0);
+    struct DirEnt *cur = (struct DirEnt *)blockbuf;
+    while ((u8 *)cur != blockbuf + BLOCKSIZE) {
+      assert((u8 *)cur < (blockbuf + BLOCKSIZE));
+
+      cb(cur->inode, ((const char *)cur) + 8, cur->name_len, cur->file_type,
+         ctx);
+
+      cur = (struct DirEnt *)(((u8 *)cur) + cur->rec_len);
+    }
+  }
+}
+
 static int x2searchDirInner(struct Inode *ino, u8 *name, usize namelen,
                             usize *res) {
   usize bcount = x2getInodeBlockCount(ino);
@@ -578,7 +598,7 @@ static int x2searchDirInner(struct Inode *ino, u8 *name, usize namelen,
     u8 *blockbuf = get(x2getFileBlock(ino, block), 0);
     struct DirEnt *cur = (struct DirEnt *)blockbuf;
     while ((u8 *)cur != blockbuf + BLOCKSIZE) {
-      assert((u8*)cur<(blockbuf+BLOCKSIZE));
+      assert((u8 *)cur < (blockbuf + BLOCKSIZE));
       if (cur->name_len == namelen && !memcmp(name, ((u8 *)cur) + 8, namelen)) {
         if (res)
           *res = cur->inode;
@@ -617,7 +637,7 @@ static int x2dirIsEmpty(usize parent_idx, usize inode_idx, struct Inode *ino) {
     u8 *blockbuf = get(x2getFileBlock(ino, block), 0);
     struct DirEnt *cur = (struct DirEnt *)blockbuf;
     while ((u8 *)cur != blockbuf + BLOCKSIZE) {
-      assert((u8*)cur<(blockbuf+BLOCKSIZE));
+      assert((u8 *)cur < (blockbuf + BLOCKSIZE));
       if (cur->inode != 0 && cur->inode != parent_idx &&
           cur->inode != inode_idx) {
         return 0;
@@ -693,7 +713,7 @@ static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
     struct DirEnt *cur = (struct DirEnt *)blockbuf;
     struct DirEnt *prev = NULL;
     while ((u8 *)cur != blockbuf + BLOCKSIZE) {
-      assert((u8*)cur<(blockbuf+BLOCKSIZE));
+      assert((u8 *)cur < (blockbuf + BLOCKSIZE));
       if (cur->name_len == namelen && !memcmp(name, ((u8 *)cur) + 8, namelen)) {
         if (cur->inode != 0) {
           x2deallocInode(parent, parent_inode_idx, cur->inode,
@@ -902,7 +922,7 @@ static int x2direntAllocInode(struct DirEnt *ent, struct Inode *ino) {
   ino->ctime = x2readTimestamp();
   ino->dtime = 0;
   ino->mtime = x2readTimestamp();
-  ino->atime = x2readTimestamp();
+  ino->atime = 0;
   ino->file_acl = 0;
   ino->links_count = 1;
 
@@ -949,7 +969,8 @@ static int x2addDirEnt(struct Inode *parent, usize parent_inode_idx,
 int x2createFile2(struct Inode *parent, usize parent_idx, struct Inode *child,
                   usize *child_idx, const char *name, usize name_len,
                   u32 file_type) {
-  if(x2searchDir(parent, (u8 *)name, name_len, NULL,NULL)==0) return X2_ERR_ENT_EXISTS;
+  if (x2searchDir(parent, (u8 *)name, name_len, NULL, NULL) == 0)
+    return X2_ERR_ENT_EXISTS;
 
   if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
     return X2_ERR_NOT_DIR;
@@ -1057,7 +1078,7 @@ static inline int x2writeFileBlock(struct Inode *ino, usize inode_idx,
   assert(block_offt < BLOCKSIZE && (BLOCKSIZE - block_offt) >= len);
   usize block = x2getFileBlock(ino, block_idx);
   if (block == 0) {
-    assert(block_offt == 0);
+    // assert(block_offt == 0);
     if (x2allocBlockX(&block) != X2_OK) {
       return X2_ERR_NO_SPACE;
     }
@@ -1191,14 +1212,15 @@ int x2readLink(struct Inode *ino, char *result, usize resultlen) {
 int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
                  usize *child_idx, const char *link_name,
                  const char *target_name) {
-  
+
   if (!checkBits(parent->mode, EXT2_S_IFDIR)) {
     return X2_ERR_NOT_DIR;
   }
 
   usize link_name_len = strnlen(link_name, 255);
 
-  if(x2searchDir(parent, (u8 *)link_name, link_name_len, NULL,NULL)==0) return X2_ERR_ENT_EXISTS;
+  if (x2searchDir(parent, (u8 *)link_name, link_name_len, NULL, NULL) == 0)
+    return X2_ERR_ENT_EXISTS;
 
   usize target_name_len = strnlen(target_name, 255);
 
@@ -1289,6 +1311,13 @@ int x2findInode(struct Inode *parent, const char *name, struct Inode *ino,
   return res;
 }
 
+int x2findInode2(struct Inode *parent, const char *name, usize name_len,
+                 struct Inode *ino, usize *ino_idx) {
+  int res = x2searchDir(parent, (u8 *)name, name_len, ino, ino_idx);
+  assert(pinCount() == 0);
+  return res;
+}
+
 int x2unlink2(struct Inode *parent, usize parent_inode_idx, const char *name,
               usize namelen) {
   int res = x2removeDirEntInner(parent, parent_inode_idx, (u8 *)name, namelen);
@@ -1301,6 +1330,38 @@ int x2unlink(struct Inode *parent, usize parent_inode_idx, const char *name) {
                                 strnlen(name, 255));
   assert(pinCount() == 0);
   return res;
+}
+
+int x2access(struct Inode *inode, u32 inode_idx) {
+  u32 ts = x2readTimestamp();
+  if (inode->atime < inode->mtime || inode->atime < inode->ctime) {
+    inode->atime = ts;
+    x2WriteInode(inode_idx, inode);
+  }
+  return 0;
+}
+
+int x2chmod(struct Inode *inode, u32 inode_idx, u16 mode) {
+  inode->mode &= 0xf000;
+  inode->mode |= mode&0xfff;
+  x2WriteInode(inode_idx, inode);
+  return 0;
+}
+
+int x2chown(struct Inode *inode, u32 inode_idx, u64 uid, u64 gid) {
+  inode->gid = gid;
+  inode->gid_high = gid>>32;
+  inode->uid = uid;
+  inode->uid_high = uid>>32;
+  x2WriteInode(inode_idx, inode);
+  return 0;
+}
+
+int x2utimens(struct Inode *inode, u32 inode_idx, u32 atime, u32 mtime) {
+  inode->atime = atime;
+  inode->mtime = mtime;
+  x2WriteInode(inode_idx, inode);
+  return 0;
 }
 
 void x2Init(struct BlockDev *d) {

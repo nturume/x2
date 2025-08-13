@@ -2,7 +2,7 @@
 
 u8 rdbuf[1024 * 1024 * 8];
 
-u64 read(FILE *f, u8 *buf, u64 len) {
+static u64 read(FILE *f, u8 *buf, u64 len) {
   u64 read = 0;
   while (read < len) {
     u64 n = fread(buf + read, 1, len - read, f);
@@ -15,7 +15,7 @@ u64 read(FILE *f, u8 *buf, u64 len) {
   return read;
 }
 
-u64 write(FILE *f, const u8 *buf, u64 len) {
+static u64 write(FILE *f, const u8 *buf, u64 len) {
   u64 written = 0;
   while (written < len) {
     u64 amnt = len - written;
@@ -29,17 +29,17 @@ u64 write(FILE *f, const u8 *buf, u64 len) {
   return written;
 }
 
-void seekBy(FILE *f, i64 n) {
+static void seekBy(FILE *f, i64 n) {
   assert(!fseek(f, n, SEEK_CUR));
 }
 
-void seekTo(FILE *f, i64 n) {
+static void seekTo(FILE *f, i64 n) {
   assert(!fseek(f, n, SEEK_SET));
 }
 
-u64 getPos(FILE *f) { return ftell(f); }
+static u64 getPos(FILE *f) { return ftell(f); }
 
-u32 getFileSize(FILE *f) {
+static u32 getFileSize(FILE *f) {
   assert(!fseek(f, 0, SEEK_END));
   u32 size = ftell(f);
   seekTo(f, 0);
