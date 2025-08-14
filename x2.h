@@ -187,17 +187,18 @@ struct BlockDev {
   void *ctx;
 };
 
-typedef void (*dirCB)(u32 inode, const char *name, u8 name_len, u8 file_type, void *ctx);
+typedef int (*DirCB)(u32 inode, const char *name, u8 name_len, u8 file_type,
+                     void *ctx);
 
 #ifdef __cplusplus
-extern "C" { 
+extern "C" {
 #endif
 
 usize x2read(struct Inode *ino, u8 *buf, usize len, u64 offt);
 isize x2write(struct Inode *ino, usize inode_idx, u8 *buf, usize len, u64 offt);
 void x2getRoot(struct Inode *inode, usize *idx);
-int x2readLink(struct Inode *ino, char *result, usize resultlen);
-int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
+int x2readsymlink(struct Inode *ino, char *result, usize resultlen);
+int x2symlink(struct Inode *parent, usize parent_idx, struct Inode *child,
                  usize *child_idx, const char *link_name,
                  const char *target_name);
 
@@ -212,19 +213,29 @@ int x2createDir(struct Inode *parent, usize parent_idx, struct Inode *child,
 void x2readInode(usize inode_idx, struct Inode *inode);
 int x2findInode(struct Inode *parent, const char *name, struct Inode *ino,
                 usize *ino_idx);
-int x2findInode2(struct Inode *parent, const char *name, usize name_len, struct Inode *ino,
-                usize *ino_idx);
+int x2findInode2(struct Inode *parent, const char *name, usize name_len,
+                 struct Inode *ino, usize *ino_idx);
 int x2unlink(struct Inode *parent, usize parent_inode_idx, const char *name);
 int x2unlink2(struct Inode *parent, usize parent_inode_idx, const char *name,
-              usize namelen);
-void x2loopDir(struct Inode *ino, dirCB cb, void *ctx);
+              u8 namelen);
+int x2rmdir(struct Inode *parent, usize parent_inode_idx, const char *name);
+int x2rmdir2(struct Inode *parent, usize parent_inode_idx, const char *name,
+             usize namelen);
+void x2loopDir(struct Inode *ino, DirCB cb, void *ctx);
 void x2sync();
 int x2access(struct Inode *inode, u32 inode_idx);
 int x2chmod(struct Inode *inode, u32 inode_idx, u16 mode);
 int x2chown(struct Inode *inode, u32 inode_idx, u64 uid, u64 gid);
 int x2utimens(struct Inode *inode, u32 inode_idx, u32 atime, u32 mtime);
+int x2rename(struct Inode *old_parent, u32 old_parent_idx,
+             struct Inode *new_parent, u32 new_parent_idx, const char *name,
+             const char *new_name);
+int x2link2(struct Inode *parent, struct Inode *child, u32 child_idx,
+            const char *name, u8 namelen);
+int x2link(struct Inode *parent, struct Inode *child, u32 child_idx,
+           const char *name);
 void x2Init(struct BlockDev *d);
 
 #ifdef __cplusplus
-} 
+}
 #endif

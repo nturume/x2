@@ -1,5 +1,6 @@
 #include "x2.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -139,8 +140,47 @@ static void put(int block_idx, int dirty) {
   tmp->dirty |= dirty;
 }
 
+static u32 ftToMode(u32 ft) {
+  switch (ft) {
+  case EXT2_FT_REG_FILE:
+    return EXT2_S_IFREG;
+  case EXT2_FT_DIR:
+    return EXT2_S_IFDIR;
+  case EXT2_FT_CHRDEV:
+    return EXT2_S_IFCHR;
+  case EXT2_FT_BLKDEV:
+    return EXT2_S_IFBLK;
+  case EXT2_FT_FIFO:
+    return EXT2_S_IFIFO;
+  case EXT2_FT_SOCK:
+    return EXT2_S_IFSOCK;
+  case EXT2_FT_SYMLINK:
+    return EXT2_S_IFLNK;
+  default:
+    return 0;
+  }
+}
+
 static inline u8 checkBits(u32 value, u32 bits) {
   return (value & bits) == bits;
+}
+
+static u32 modeToFT(u32 mod) {
+  if (checkBits(mod, EXT2_S_IFSOCK))
+    return EXT2_FT_SOCK;
+  if (checkBits(mod, EXT2_S_IFLNK))
+    return EXT2_FT_SYMLINK;
+  if (checkBits(mod, EXT2_S_IFREG))
+    return EXT2_FT_REG_FILE;
+  if (checkBits(mod, EXT2_S_IFBLK))
+    return EXT2_FT_BLKDEV;
+  if (checkBits(mod, EXT2_S_IFDIR))
+    return EXT2_FT_DIR;
+  if (checkBits(mod, EXT2_S_IFCHR))
+    return EXT2_FT_CHRDEV;
+  if (checkBits(mod, EXT2_S_IFIFO))
+    return EXT2_FT_FIFO;
+  return 0;
 }
 
 static usize alignB(u64 addr, usize target) { return addr & ~(target - 1); }
@@ -575,7 +615,7 @@ static int x2addDirEntToBlock(usize block_idx, struct DirEnt *ent) {
   return X2_ERR_NO_SPACE;
 }
 
-void x2loopDir(struct Inode *ino, dirCB cb, void *ctx) {
+void x2loopDir(struct Inode *ino, DirCB cb, void *ctx) {
   usize bcount = x2getInodeBlockCount(ino);
   for (usize block = 0; block < bcount; block += 1) {
     u8 *blockbuf = get(x2getFileBlock(ino, block), 0);
@@ -649,36 +689,33 @@ static int x2dirIsEmpty(usize parent_idx, usize inode_idx, struct Inode *ino) {
 }
 
 static void x2deallocInode(struct Inode *parent, usize parent_idx,
-                           usize inode_idx, u8 is_dir) {
-  struct Inode ino;
-  x2readInode(inode_idx, &ino);
-  assert(ino.links_count > 0);
-  if (checkBits(ino.mode, EXT2_S_IFDIR) &&
-      x2dirIsEmpty(parent_idx, inode_idx, &ino)) {
-    /*if not empt*/
-    ino.links_count = 0;
+                           struct Inode *ino, usize inode_idx) {
+  // struct Inode ino;
+  // x2readInode(inode_idx, &ino);
+  u8 is_dir = checkBits(ino->mode, EXT2_S_IFDIR);
+  assert(ino->links_count > 0);
+  if (is_dir) {
+    /*if not empt thats ur bullshit*/
+    ino->links_count = 0;
   } else {
-    ino.links_count -= 1;
+    ino->links_count -= 1;
   }
 
-  if (ino.links_count > 0) { /*lucky mf*/
-    x2WriteInode(inode_idx, &ino);
+  if (ino->links_count > 0) { /*lucky mf*/
+    x2WriteInode(inode_idx, ino);
     return;
   }
 
-  x2deallocInodeBlocks(&ino);
+  x2deallocInodeBlocks(ino);
   x2dealloInodeBit(inode_idx, is_dir);
 
-  u8 inode_is_dir = checkBits(ino.mode, EXT2_S_IFDIR);
-  assert(inode_is_dir == is_dir);
-
-  if (inode_is_dir) {
+  if (is_dir) {
     parent->links_count -= 1; /*..*/
     x2WriteInode(parent_idx, parent);
   }
 
-  ino.dtime = x2readTimestamp();
-  x2WriteInode(inode_idx, &ino);
+  ino->dtime = x2readTimestamp();
+  x2WriteInode(inode_idx, ino);
 }
 
 static struct DirEnt *x2mergeLeft(struct DirEnt *prev, struct DirEnt *ent) {
@@ -703,8 +740,7 @@ static void x2mergeRight(struct DirEnt *ent_ptr) {
   }
 }
 
-static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
-                               u8 *name, usize namelen) {
+static int x2removeDirEntInner(struct Inode *parent, DirCB cb, void *ctx) {
 
   usize bcount = x2getInodeBlockCount(parent);
   for (usize block = 0; block < bcount; block += 1) {
@@ -714,12 +750,12 @@ static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
     struct DirEnt *prev = NULL;
     while ((u8 *)cur != blockbuf + BLOCKSIZE) {
       assert((u8 *)cur < (blockbuf + BLOCKSIZE));
-      if (cur->name_len == namelen && !memcmp(name, ((u8 *)cur) + 8, namelen)) {
-        if (cur->inode != 0) {
-          x2deallocInode(parent, parent_inode_idx, cur->inode,
-                         cur->file_type == EXT2_FT_DIR);
-        }
+      // if (cur->name_len == namelen && !memcmp(name, ((u8 *)cur) + 8,
+      // namelen)) {
+      int cbres = cb(cur->inode, ((const char *)cur) + 8, cur->name_len,
+                     cur->file_type, ctx);
 
+      if (cbres == 1) {
         struct DirEnt *working_ptr = x2mergeLeft(prev, cur);
         if ((((u8 *)working_ptr) + working_ptr->rec_len) <
             (blockbuf + BLOCKSIZE))
@@ -729,13 +765,18 @@ static int x2removeDirEntInner(struct Inode *parent, usize parent_inode_idx,
         return X2_OK;
       }
 
+      if (cbres < 0) {
+        put(block_pos, 0);
+        return cbres;
+      }
+
       prev = cur;
       cur = (struct DirEnt *)(((u8 *)cur) + cur->rec_len);
     }
 
     put(block_pos, 0); /* TODO */
   }
-  return X2_ERR_NO_ENT;
+  return -ENOENT;
 }
 
 /* wont write inode */
@@ -928,6 +969,45 @@ static int x2direntAllocInode(struct DirEnt *ent, struct Inode *ino) {
 
   return X2_OK;
 }
+static int x2tryRename(struct Inode *parent, usize parent_inode_idx, const u8 *name,
+                       u8 namelen, struct DirEnt *new_ent) {
+
+  usize bcount = x2getInodeBlockCount(parent);
+  for (usize block = 0; block < bcount; block += 1) {
+    usize block_pos = x2getFileBlock(parent, block);
+    u8 *blockbuf = get(block_pos, 1);
+    struct DirEnt *cur = (struct DirEnt *)blockbuf;
+    struct DirEnt *prev = NULL;
+    while ((u8 *)cur != blockbuf + BLOCKSIZE) {
+      assert((u8 *)cur < (blockbuf + BLOCKSIZE));
+      if (cur->name_len == namelen && !memcmp(name, ((u8 *)cur) + 8, namelen)) {
+
+        if (cur->name_len >= new_ent->name_len) {
+          memset(((u8 *)cur) + 8, 0, cur->name_len); /* TODO */
+          memcpy(((u8 *)cur) + 8, new_ent->name, new_ent->name_len);
+          cur->name_len = new_ent->name_len;
+          new_ent->name_len = 0;
+        } else {
+          new_ent->inode = cur->inode;
+          new_ent->file_type = cur->file_type;
+          struct DirEnt *working_ptr = x2mergeLeft(prev, cur);
+          if ((((u8 *)working_ptr) + working_ptr->rec_len) <
+              (blockbuf + BLOCKSIZE))
+            x2mergeRight(working_ptr);
+        }
+
+        put(block_pos, 1);
+        return X2_OK;
+      }
+
+      prev = cur;
+      cur = (struct DirEnt *)(((u8 *)cur) + cur->rec_len);
+    }
+
+    put(block_pos, 0); /* TODO */
+  }
+  return -ENOENT;
+}
 
 static int x2addDirEnt(struct Inode *parent, usize parent_inode_idx,
                        struct DirEnt *ent, struct Inode *ent_inode) {
@@ -942,7 +1022,7 @@ static int x2addDirEnt(struct Inode *parent, usize parent_inode_idx,
       .file_type = EXT2_FT_DIR,
       .inode = ent->inode,
       .name_len = 1,
-      .name = "..",
+      .name = (u8*)"..",
   };
 
   if (ent->file_type == EXT2_FT_DIR) {
@@ -1179,7 +1259,7 @@ isize x2write(struct Inode *ino, usize inode_idx, u8 *buf, usize len,
   return offt - orig_offt;
 }
 
-int x2readLink(struct Inode *ino, char *result, usize resultlen) {
+int x2readsymlink(struct Inode *ino, char *result, usize resultlen) {
   if (!checkBits(ino->mode, EXT2_S_IFLNK)) {
     return X2_ERR_NOT_SYMLINK;
   }
@@ -1209,7 +1289,7 @@ int x2readLink(struct Inode *ino, char *result, usize resultlen) {
   return i;
 }
 
-int x2createLink(struct Inode *parent, usize parent_idx, struct Inode *child,
+int x2symlink(struct Inode *parent, usize parent_idx, struct Inode *child,
                  usize *child_idx, const char *link_name,
                  const char *target_name) {
 
@@ -1318,16 +1398,93 @@ int x2findInode2(struct Inode *parent, const char *name, usize name_len,
   return res;
 }
 
+struct RemoveCtx {
+  const char *name;
+  struct Inode *ino;
+  u32 ino_idx;
+  u32 parent_idx;
+  u8 namlen;
+  u8 unlink;
+};
+
+static int removeEntCB(u32 inode, const char *name, u8 namelen, u8 file_type,
+                       void *ctx) {
+  struct RemoveCtx *rctx = ctx;
+  if (rctx->namlen == namelen && memcmp(rctx->name, name, rctx->namlen) == 0) {
+    if (inode != 0) {
+      if (rctx->unlink == 1 && file_type == EXT2_FT_DIR) {
+        return -EISDIR;
+      }
+
+      if (rctx->unlink == 0 && file_type == EXT2_FT_REG_FILE) {
+        return -ENOTDIR;
+      }
+
+      rctx->ino_idx = inode;
+      if (rctx->ino == NULL) {
+        return 1;
+      }
+
+      x2readInode(inode, rctx->ino);
+      if (file_type == EXT2_FT_DIR &&
+          checkBits(rctx->ino->mode, EXT2_S_IFDIR) &&
+          !x2dirIsEmpty(rctx->parent_idx, inode, rctx->ino)) {
+        return -ENOTEMPTY;
+      }
+
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int x2unlinkInner(struct Inode *parent, usize parent_inode_idx,
+                         const char *name, u8 namelen, u8 unlink) {
+  struct Inode target;
+  struct RemoveCtx ctx = {
+      .name = name,
+      .namlen = namelen,
+      .parent_idx = parent_inode_idx,
+      .unlink = 1,
+      .ino = &target,
+  };
+
+  int res = x2removeDirEntInner(parent, removeEntCB, &ctx);
+  assert(pinCount() == 0);
+
+  if (res != 0) {
+    return res;
+  }
+
+  x2deallocInode(parent, parent_inode_idx, &target, ctx.ino_idx);
+
+  return 0;
+}
+
 int x2unlink2(struct Inode *parent, usize parent_inode_idx, const char *name,
-              usize namelen) {
-  int res = x2removeDirEntInner(parent, parent_inode_idx, (u8 *)name, namelen);
+              u8 namelen) {
+  int res = x2unlinkInner(parent, parent_inode_idx, name, namelen, 1);
   assert(pinCount() == 0);
   return res;
 }
 
 int x2unlink(struct Inode *parent, usize parent_inode_idx, const char *name) {
-  int res = x2removeDirEntInner(parent, parent_inode_idx, (u8 *)name,
-                                strnlen(name, 255));
+  int res =
+      x2unlinkInner(parent, parent_inode_idx, name, strnlen(name, 255), 1);
+  assert(pinCount() == 0);
+  return res;
+}
+
+int x2rmdir2(struct Inode *parent, usize parent_inode_idx, const char *name,
+             usize namelen) {
+  int res = x2unlinkInner(parent, parent_inode_idx, name, namelen, 0);
+  assert(pinCount() == 0);
+  return res;
+}
+
+int x2rmdir(struct Inode *parent, usize parent_inode_idx, const char *name) {
+  int res =
+      x2unlinkInner(parent, parent_inode_idx, name, strnlen(name, 255), 0);
   assert(pinCount() == 0);
   return res;
 }
@@ -1343,16 +1500,16 @@ int x2access(struct Inode *inode, u32 inode_idx) {
 
 int x2chmod(struct Inode *inode, u32 inode_idx, u16 mode) {
   inode->mode &= 0xf000;
-  inode->mode |= mode&0xfff;
+  inode->mode |= mode & 0xfff;
   x2WriteInode(inode_idx, inode);
   return 0;
 }
 
 int x2chown(struct Inode *inode, u32 inode_idx, u64 uid, u64 gid) {
   inode->gid = gid;
-  inode->gid_high = gid>>32;
+  inode->gid_high = gid >> 32;
   inode->uid = uid;
-  inode->uid_high = uid>>32;
+  inode->uid_high = uid >> 32;
   x2WriteInode(inode_idx, inode);
   return 0;
 }
@@ -1362,6 +1519,98 @@ int x2utimens(struct Inode *inode, u32 inode_idx, u32 atime, u32 mtime) {
   inode->mtime = mtime;
   x2WriteInode(inode_idx, inode);
   return 0;
+}
+
+int x2rename2(struct Inode *parent, u32 parent_idx, const char *name,
+              u8 name_len, const char *new_name, u8 new_name_len) {
+  struct DirEnt new_ent = {
+      .inode = 0, .name = (u8 *)new_name, .name_len = new_name_len};
+  int res = x2tryRename(parent, parent_idx, (const u8*)name, name_len, &new_ent);
+  if (res != 0) {
+    return res;
+  }
+
+  if (new_ent.inode != 0 && new_ent.name_len != 0) {
+    res = x2addDirEntInner(parent, &new_ent);
+
+    if (res != 0) {
+      return res;
+    }
+  }
+
+  return 0;
+}
+
+int x2rename(struct Inode *old_parent, u32 old_parent_idx,
+             struct Inode *new_parent, u32 new_parent_idx, const char *name,
+             const char *new_name) {
+  struct DirEnt new_ent = {
+      .inode = 0, .name = (u8 *)new_name, .name_len = strnlen(new_name, 255)};
+
+  if (old_parent_idx == new_parent_idx) {
+    int res = x2tryRename(old_parent, old_parent_idx, (u8 *)name,
+                          strnlen(name, 255), &new_ent);
+    if (res != 0) {
+      return res;
+    }
+
+    if (new_ent.inode != 0 && new_ent.name_len != 0) {
+      res = x2addDirEntInner(old_parent, &new_ent);
+
+      if (res != 0) {
+        return res;
+      }
+    }
+    return 0;
+  }
+
+  struct RemoveCtx ctx = {
+      .name = name,
+      .namlen = strnlen(name, 255),
+      .parent_idx = old_parent_idx,
+      .unlink = 2,
+      .ino = NULL,
+  };
+
+  int res = x2removeDirEntInner(old_parent, removeEntCB, &ctx);
+  assert(pinCount() == 0);
+
+  if (res != 0) {
+    return res;
+  }
+
+  new_ent.inode = ctx.ino_idx;
+  res = x2addDirEntInner(new_parent, &new_ent);
+
+  return res;
+}
+
+int x2link2(struct Inode *parent, struct Inode *child, u32 child_idx,
+            const char *name, u8 namelen) {
+
+  if (checkBits(child->mode, EXT2_S_IFDIR)) {
+    return -EPERM;
+  }
+
+  struct DirEnt new_ent = {.file_type = modeToFT(child->mode),
+                           .inode = child_idx,
+                           .name = (u8 *)name,
+                           .name_len = namelen};
+
+  int res = x2addDirEntInner(parent, &new_ent);
+
+  if (res != 0) {
+    return res;
+  }
+
+  child->links_count += 1;
+  x2WriteInode(child_idx, child);
+  return 0;
+}
+
+int x2link(struct Inode *parent, struct Inode *child, u32 child_idx,
+           const char *name) {
+  return x2link2(parent, child, child_idx, name, strnlen(name, 255));
 }
 
 void x2Init(struct BlockDev *d) {
