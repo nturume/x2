@@ -1521,26 +1521,6 @@ int x2utimens(struct Inode *inode, u32 inode_idx, u32 atime, u32 mtime) {
   return 0;
 }
 
-int x2rename2(struct Inode *parent, u32 parent_idx, const char *name,
-              u8 name_len, const char *new_name, u8 new_name_len) {
-  struct DirEnt new_ent = {
-      .inode = 0, .name = (u8 *)new_name, .name_len = new_name_len};
-  int res = x2tryRename(parent, parent_idx, (const u8*)name, name_len, &new_ent);
-  if (res != 0) {
-    return res;
-  }
-
-  if (new_ent.inode != 0 && new_ent.name_len != 0) {
-    res = x2addDirEntInner(parent, &new_ent);
-
-    if (res != 0) {
-      return res;
-    }
-  }
-
-  return 0;
-}
-
 int x2rename(struct Inode *old_parent, u32 old_parent_idx,
              struct Inode *new_parent, u32 new_parent_idx, const char *name,
              const char *new_name) {
