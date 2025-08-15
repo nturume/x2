@@ -1,6 +1,7 @@
 #include "block.h"
 #include "x2.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -26,7 +27,7 @@ i32 main() {
     l = str(i);
     assert(l>0);
     l = x2createFile(&root, 2, &child, &child_idx,  string);
-    if(l==X2_ERR_NO_SPACE) break;
+    if(l==-ENOSPC) break;
     assert(l==X2_OK);
   }
   i -= 1;
@@ -41,7 +42,7 @@ i32 main() {
     l = str(i);
     assert(l>0);
     l = x2createDir(&root, 2, &child, &child_idx,  string);
-    if(l==X2_ERR_NO_SPACE) break;
+    if(l==-ENOSPC) break;
     assert(l==X2_OK);
   }
   i -= 1;

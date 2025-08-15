@@ -1,4 +1,5 @@
 #include "block.h"
+#include <errno.h>
 #include <time.h>
 #define X2_CODE_STUFF
 #include "x2.h"
@@ -21,7 +22,7 @@ i32 main() {
 
   for (;;) {
     int res = x2createDir(parent_ptr, parent_idx, child_ptr, &child_idx, "a");
-    if (res == X2_ERR_NO_SPACE)
+    if (res == -ENOSPC)
       break;
     assert(res == X2_OK);
     usize tmp;

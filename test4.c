@@ -1,6 +1,7 @@
 #include "block.h"
 #include "x2.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 
 u8 rbuf[BLOCKSIZE * 32];
@@ -51,14 +52,14 @@ i32 main() {
 
  for (i = 0;; i += BLOCKSIZE * 29) {
     n = x2write(&ino, ino_idx, rbuf, BLOCKSIZE * 29, i);
-    if (n == X2_ERR_NO_SPACE)
+    if (n == -ENOSPC)
       break;
     assert(n > 0);
   }
 
   for (i = 0;/*i < (BLOCKSIZE*1038)*/; i += BLOCKSIZE) {
     n = x2write(&ino, ino_idx, rbuf, BLOCKSIZE, i);
-    if (n == X2_ERR_NO_SPACE)
+    if (n == -ENOSPC)
       break;
     assert(n > 0);
   }
@@ -67,7 +68,7 @@ i32 main() {
 
   for (i = 0;; i += BLOCKSIZE * 2) {
     n = x2write(&ino, ino_idx, rbuf, BLOCKSIZE * 2, i);
-    if (n == X2_ERR_NO_SPACE)
+    if (n == -ENOSPC)
       break;
     assert(n > 0);
   }
@@ -75,7 +76,7 @@ i32 main() {
 
  for (i = 0;; i += BLOCKSIZE * 16) {
     n = x2write(&ino, ino_idx, rbuf, BLOCKSIZE * 16, i);
-    if (n == X2_ERR_NO_SPACE)
+    if (n == -ENOSPC)
       break;
     assert(n > 0);
   }

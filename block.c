@@ -1,6 +1,6 @@
 #include "block.h"
 
-u8 rdbuf[1024 * 1024 * 256];
+u8 rdbuf[1024 * 1024 * 8];
 
 static u64 read(FILE *f, u8 *buf, u64 len) {
   u64 read = 0;
