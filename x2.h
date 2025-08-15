@@ -73,16 +73,16 @@
 #define BLOCKSIZE 4096
 
 #define X2_OK 0
-#define X2_ERR_NO_SPACE -1
-#define X2_ERR_NO_ENT -2
-#define X2_ERR_SEEK_OUT_OF_BOUNDS -3
-#define X2_ERR_ENT_EXISTS -4
-#define X2_ERR_DIR_NOT_EMPTY -5
-#define X2_ERR_NOT_SYMLINK -6
-#define X2_ERR_NOT_DIR -7
-#define X2_ERR_NOT_FILE -8
-#define X2_ERR_NULL_PTR -9
-#define X2_ERR_BAD_PARENT -10
+// #define X2_ERR_NO_SPACE -1
+// #define X2_ERR_NO_ENT -2
+// #define X2_ERR_SEEK_OUT_OF_BOUNDS -3
+// #define X2_ERR_ENT_EXISTS -4
+// #define X2_ERR_DIR_NOT_EMPTY -5
+// #define X2_ERR_NOT_SYMLINK -6
+// #define X2_ERR_NOT_DIR -7
+// #define X2_ERR_NOT_FILE -8
+// #define X2_ERR_NULL_PTR -9
+// #define X2_ERR_BAD_PARENT -10
 
 struct SuperBlock {
   u32 inodes_count;
