@@ -5,6 +5,7 @@ NC="\e[0m"
 mkdir -p m
 rm -f disk.img 
 sudo dd of=disk.img if=/dev/zero bs=1M count=8
+
 echo "y" | mkfs.ext2 -c disk.img -b 4096 -I 128
 gcc -g test0.c block.c x2.c -fsanitize=address && ./a.out
 fsck.ext2 disk.img -f -n
@@ -61,4 +62,13 @@ if [ $? -ne 0 ]; then
   echo -e "${RED}test5 failed successfully.${NC}";
 else
   echo -e "${GREEN}test5 failed to fail.${NC}"
+fi
+
+echo "y" | mkfs.ext2 -c disk.img -b 4096 -I 128
+gcc -g test7.c block.c x2.c -fsanitize=address && ./a.out
+fsck.ext2 disk.img -f -n
+if [ $? -ne 0 ]; then
+  echo -e "${RED}test7 failed successfully.${NC}";
+else
+  echo -e "${GREEN}test7 failed to fail.${NC}"
 fi

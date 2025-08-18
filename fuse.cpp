@@ -255,6 +255,8 @@ static int fs_flush(const char *path, struct fuse_file_info *fi) { return 0; }
 static int fs_fsync(const char *path, int isdatasync,
                     struct fuse_file_info *fi) {
   x2sync();
+  // DummyFlush();
+  // printf("=====synced=====\n");
   return 0;
 }
 
@@ -416,6 +418,23 @@ static int fs_readlink(const char *path, char *buf, size_t size)
 	return 0;
 }
 
+static int fs_statfs(const char *path, struct statvfs *stbuf)
+{
+  memset(stbuf, 0, sizeof(*stbuf));
+  struct SuperBlock *sb = x2sb();
+  
+  stbuf->f_bsize = BLOCKSIZE;
+  stbuf->f_frsize = BLOCKSIZE;
+  stbuf->f_blocks = sb->blocks_count;
+  stbuf->f_bfree = sb->free_blocks_count;
+  stbuf->f_bavail = sb->free_blocks_count - sb->r_blocks_count;
+  stbuf->f_files = sb->inodes_count;
+  stbuf->f_ffree = sb->free_inodes_count;
+  stbuf->f_favail = sb->inodes_count;
+
+  return 0;
+}
+
 static const struct fuse_operations fs_ops = {
     .getattr = fs_getattr,
     .readlink = fs_readlink,
@@ -430,6 +449,7 @@ static const struct fuse_operations fs_ops = {
     .open = fs_open,
     .read = fs_read,
     .write = fs_write,
+    .statfs = fs_statfs,
     .flush = fs_flush,
     .release = fs_release,
     .fsync = fs_fsync,

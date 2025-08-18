@@ -30,6 +30,12 @@ i32 main() {
 
   l = x2write(&ino, ino_idx, "a", 1, 1024 * 1024 * 30);
   assert(l == 1);
+  l = x2write(&ino, ino_idx, "a", 1, 1024 * 1024 * 29);
+  assert(l == 1);
+  l = x2write(&ino, ino_idx, "a", 1, 1024 * 1024 * 28);
+  assert(l == 1);
+  l = x2write(&ino, ino_idx, "a", 1, 1024 * 1024 * 27);
+  assert(l == 1);
 
   assert(ino.size == 1024 * 1024 * 30 + 1);
 

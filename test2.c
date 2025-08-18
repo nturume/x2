@@ -49,7 +49,7 @@ i32 main() {
   for(;i > 0;i--) {
     l = str(i);
     assert(l>0);
-    l = x2unlink(&root, 2, string);
+    l = x2rmdir(&root, 2, string);
     assert(l==X2_OK);
   }
   x2sync();

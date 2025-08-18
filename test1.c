@@ -37,7 +37,7 @@ i32 main() {
   for (;child_idx!=2;) {
     int r = x2findInode(parent_ptr, "..", child_ptr, &child_idx);
     assert(r==0);
-    r = x2unlink2(child_ptr,child_idx, "a", 1);
+    r = x2rmdir2(child_ptr,child_idx, "a", 1);
     assert(r == 0);
     parent_ptr = child_ptr;
   }

@@ -29,7 +29,7 @@ i32 main() {
  usize total_r = 0;
   for (usize i = 0;; i += 3) {
     n = x2read(&ino, rbuf, 3, i);
-    putsl(rbuf, n);
+    // putsl(rbuf, n);
     if (n == 0)
       break;
     total_r += n;

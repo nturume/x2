@@ -1,4 +1,5 @@
 #include "block.h"
+#include <string.h>
 #include <time.h>
 #define X2_CODE_STUFF
 #include "x2.h"
@@ -28,7 +29,7 @@ i32 main() {
   }
 
   for (usize i = 1; i < 256; i++) {
-    int r = x2unlink2(&root, 2, letters, i);
+    int r = x2rmdir2(&root, 2, letters, i);
     assert(r == 0);
   }
 

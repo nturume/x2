@@ -234,6 +234,10 @@ int x2link2(struct Inode *parent, struct Inode *child, u32 child_idx,
             const char *name, u8 namelen);
 int x2link(struct Inode *parent, struct Inode *child, u32 child_idx,
            const char *name);
+int x2truncate(struct Inode *inode, u32 inode_idx, u64 size);
+int x2fallocate(struct Inode *inode, u32 inode_idx, u32 mode, u64 offt,
+                u64 len);
+struct SuperBlock * x2sb();
 void x2Init(struct BlockDev *d);
 
 #ifdef __cplusplus
