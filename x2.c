@@ -1094,6 +1094,20 @@ static int x2addDirEnt(struct Inode *parent, usize parent_inode_idx,
   return X2_OK;
 }
 
+static void accessInode(struct Inode *inode) {
+  inode->atime = x2readTimestamp();
+}
+
+static void changeInode(struct Inode *inode) {
+  inode->ctime = x2readTimestamp();
+}
+
+static void modifyInode(struct Inode *inode) {
+  u32 ts = x2readTimestamp();
+  inode->ctime = ts;
+  inode->mtime = ts;
+}
+
 int x2createFile2(struct Inode *parent, usize parent_idx, struct Inode *child,
                   usize *child_idx, const char *name, usize name_len,
                   u32 file_type) {
@@ -1122,6 +1136,7 @@ int x2createFile2(struct Inode *parent, usize parent_idx, struct Inode *child,
     return res;
   }
 
+  modifyInode(parent);
   res = x2addDirEnt(parent, parent_idx, &ent, child);
   if (res != X2_OK) {
     assert(pinCount() == 0);
@@ -1130,6 +1145,7 @@ int x2createFile2(struct Inode *parent, usize parent_idx, struct Inode *child,
   if (child_idx)
     *child_idx = ent.inode;
   assert(pinCount() == 0);
+  
   return X2_OK;
 }
 
@@ -1260,6 +1276,8 @@ isize x2writeInner(struct Inode *ino, usize inode_idx, u8 *buf, usize len,
 
   if (len <= 0)
     return 0;
+
+  modifyInode(ino);
 
   usize filesz = x2getFileSize(ino);
 
@@ -1532,6 +1550,8 @@ static int x2unlinkInner(struct Inode *parent, usize parent_inode_idx,
       .ino = &target,
   };
 
+  modifyInode(parent);
+
   int res = x2removeDirEntInner(parent, removeEntCB, &ctx);
   assert(pinCount() == 0);
 
@@ -1584,6 +1604,7 @@ int x2access(struct Inode *inode, u32 inode_idx) {
 int x2chmod(struct Inode *inode, u32 inode_idx, u16 mode) {
   inode->mode &= 0xf000;
   inode->mode |= mode & 0xfff;
+  changeInode(inode);
   x2WriteInode(inode_idx, inode);
   return 0;
 }
@@ -1593,6 +1614,7 @@ int x2chown(struct Inode *inode, u32 inode_idx, u64 uid, u64 gid) {
   inode->gid_high = gid >> 32;
   inode->uid = uid;
   inode->uid_high = uid >> 32;
+  changeInode(inode);
   x2WriteInode(inode_idx, inode);
   return 0;
 }
@@ -1600,6 +1622,7 @@ int x2chown(struct Inode *inode, u32 inode_idx, u64 uid, u64 gid) {
 int x2utimens(struct Inode *inode, u32 inode_idx, u32 atime, u32 mtime) {
   inode->atime = atime;
   inode->mtime = mtime;
+  changeInode(inode);
   x2WriteInode(inode_idx, inode);
   return 0;
 }
@@ -1624,6 +1647,10 @@ int x2rename(struct Inode *old_parent, u32 old_parent_idx,
         return res;
       }
     }
+    modifyInode(old_parent);
+    modifyInode(new_parent);
+    x2WriteInode(old_parent_idx, old_parent);
+    x2WriteInode(new_parent_idx, new_parent);
     return 0;
   }
 
@@ -1644,6 +1671,15 @@ int x2rename(struct Inode *old_parent, u32 old_parent_idx,
 
   new_ent.inode = ctx.ino_idx;
   res = x2addDirEntInner(new_parent, &new_ent);
+
+  if (res != 0) {
+    return res;
+  }
+
+  modifyInode(old_parent);
+  modifyInode(new_parent);
+  x2WriteInode(old_parent_idx, old_parent);
+  x2WriteInode(new_parent_idx, new_parent);
 
   return res;
 }
@@ -1685,6 +1721,7 @@ int x2truncate(struct Inode *inode, u32 inode_idx, u64 size) {
     u32 dif = cur_blocks - x2getFileBlockCount2(size);
     x2deallocInodeBlocks(inode, dif);
     x2setFileSize(inode, size);
+    modifyInode(inode);
     x2WriteInode(inode_idx, inode);
     return 0;
   }
@@ -1713,9 +1750,7 @@ int x2fallocate(struct Inode *inode, u32 inode_idx, u32 mode, u64 offt,
   return res;
 }
 
-struct SuperBlock * x2sb() {
-  return &sb;
-}
+struct SuperBlock *x2sb() { return &sb; }
 
 void x2Init(struct BlockDev *d) {
   dev = d;
